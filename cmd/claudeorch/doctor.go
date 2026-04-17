@@ -181,7 +181,9 @@ func checkStaleSessions(configDir string, fix bool) checkResult {
 		if readErr != nil {
 			continue
 		}
-		var s struct{ PID int `json:"pid"` }
+		var s struct {
+			PID int `json:"pid"`
+		}
 		if jsonErr := unmarshalJSON(data, &s); jsonErr != nil || s.PID <= 0 {
 			continue
 		}
