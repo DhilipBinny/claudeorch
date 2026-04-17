@@ -1,5 +1,6 @@
 // Package swap implements the two-file atomic account swap:
-//   credentials.json + .claude.json are moved together under a single flock.
+//
+//	credentials.json + .claude.json are moved together under a single flock.
 //
 // Swap stages (all file ops under global lock):
 //  1. Stage  — write incoming profile files into tmp-swap-<pid>/
