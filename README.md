@@ -1,86 +1,92 @@
 # claudeorch
 
-> Switch, isolate, and track usage across multiple Claude Code accounts.
+**A command-line account switcher for [Claude Code](https://claude.ai/code).** Save multiple Anthropic logins, swap between them in one command, or run them in parallel terminals — without re-authenticating through the browser every time.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange)]()
-[![Go: 1.22+](https://img.shields.io/badge/go-1.22%2B-00ADD8)]()
-
-A cross-platform Go CLI for running multiple Claude Code subscriptions on one machine — credential swap, parallel isolated sessions, and usage monitoring, all without repeated logins.
-
-> **Status:** pre-release, active development. Not yet installable. Star the repo to follow progress.
-
----
-
-## Why `claudeorch`?
-
-Claude Code supports one authenticated account per user at a time. If you have two Max subscriptions, a work + personal split, or want to rotate accounts when usage limits hit, you're stuck logging out and back in.
-
-`claudeorch` solves that with three core capabilities:
-
-- **Swap** — replace the active Claude Code account atomically. Safe: refuses to run while a Claude session is active.
-- **Isolate** — launch `claude` with a per-account configuration directory, so different terminals can run different accounts in parallel.
-- **Track** — show 5-hour and 7-day usage percentages per account, so you know when to swap.
-
-## Features
-
-### v1
-
-- [x] Register multiple Claude Code accounts (`claudeorch add`)
-- [x] Swap the active account in place (`claudeorch swap`)
-- [x] Launch isolated parallel sessions (`claudeorch launch`)
-- [x] List profiles with per-account usage (`claudeorch list`)
-- [x] Status, rename, remove, refresh, doctor commands
-- [x] Atomic credential operations with rollback
-- [x] Running-session detection (blocks unsafe swaps)
-- [x] Shell completion (bash, zsh, fish, PowerShell)
-- [x] Signed release binaries (Homebrew, `go install`, curl installer)
-
-### v1.1 (coming later)
-
-- [ ] `claudeorch watch` — auto-rotate accounts on usage threshold
-- [ ] Windows (Tier 1) support
-
-### Explicitly not planned
-
-- ❌ Credential export/import (see design rationale)
-- ❌ OAuth proxy / API interception
-- ❌ Multi-provider support (Claude only)
-- ❌ Telemetry of any kind
-
-## Install
-
-### Recommended: one-line installer (Linux & macOS, no Go needed)
+[![GitHub release](https://img.shields.io/github/v/release/DhilipBinny/claudeorch?display_name=tag&sort=semver&color=00ADD8)](https://github.com/DhilipBinny/claudeorch/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/DhilipBinny/claudeorch)](https://goreportcard.com/report/github.com/DhilipBinny/claudeorch)
+[![Go Version](https://img.shields.io/badge/go-1.22%2B-00ADD8)](go.mod)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-lightgrey)]()
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DhilipBinny/claudeorch/main/install.sh | sh
 ```
 
-The script:
-- Detects your OS (Linux/macOS) and CPU (amd64/arm64)
-- Downloads the matching pre-built binary from the latest GitHub Release
-- Verifies its SHA-256 checksum
-- Installs to `~/.local/bin/claudeorch` (or `/usr/local/bin/claudeorch` if run as root)
+---
+
+## What it does
+
+Claude Code authenticates one Anthropic account at a time. If you own **two Max subscriptions**, work across multiple organizations, or rotate accounts when you hit usage limits, you're stuck running `claude /logout` → browser OAuth → `claude /login` on every switch.
+
+**`claudeorch` fixes that.** It's a small Go CLI that safely reads and writes Claude Code's own credential files, gives you named profiles, and lets you:
+
+- 🔁 **Switch accounts instantly** — `claudeorch swap work` atomically replaces the active credentials, no browser needed.
+- 🪟 **Run accounts in parallel** — `claudeorch launch home` in a separate terminal uses `CLAUDE_CONFIG_DIR` so two accounts run simultaneously without stepping on each other.
+- 📊 **See your quota live** — `claudeorch status` and `claudeorch list` show per-account 5-hour and 7-day usage bars, reset times, and active session.
+- 🔒 **Stay safe** — atomic writes with rollback, refuses to swap while Claude is mid-session, zero-telemetry, strict file permissions.
+- 🪶 **Zero maintenance** — one static binary, self-updates via `claudeorch upgrade`, clean uninstall.
+
+### Live dashboard
+
+```text
+$ claudeorch status
+Active profile: work (alice@example.com)
+  5H  ███░░░░░░░░░░░░  29%  resets 12m
+  7D  █░░░░░░░░░░░░░░   9%  resets 6d4h
+
+Sessions: 1 running
+  terminal  pid=12345  profile=work  cwd=/home/alice/project
+
+1 other profile. Run 'claudeorch list' for all usage.
+```
+
+```text
+$ claudeorch list
+PROFILE   EMAIL                    ORG       5H                    5H-RESET  7D                    7D-RESET  STATUS
+* work    alice@example.com        Acme      ███░░░░░░░░░░░░  29%  12m       █░░░░░░░░░░░░░░   9%  6d4h      active
+  home    alice@personal.com       Personal  ██████░░░░░░░░░  41%  3h3m      ░░░░░░░░░░░░░░░   3%  6d7h
+```
+
+---
+
+## Installation
+
+### Recommended — one-line installer (Linux + macOS)
+
+No Go toolchain needed.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DhilipBinny/claudeorch/main/install.sh | sh
+```
+
+The installer:
+- Detects your OS (Linux / macOS) and CPU (amd64 / arm64)
+- Downloads the matching pre-built binary from the latest [GitHub Release](https://github.com/DhilipBinny/claudeorch/releases/latest)
+- Verifies SHA-256 against the release checksums
+- Installs to `~/.local/bin/claudeorch` (or `/usr/local/bin/claudeorch` when run as root)
+- Shows a live progress bar with size, speed, and ETA
 
 Verify:
+
 ```bash
 claudeorch --version
 ```
 
-If `~/.local/bin` is not on your `$PATH` yet, add:
+### Self-upgrade
+
+Once installed, you never need the curl installer again:
+
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+claudeorch upgrade          # pulls the latest release
+claudeorch upgrade --check  # dry-run: show current + latest
+claudeorch upgrade --to v0.1.0  # pin to a specific version
 ```
 
-Pin a specific version with `CLAUDEORCH_VERSION=v0.1.0-rc1`, or change the destination with `CLAUDEORCH_BINDIR=/path/to/dir`.
-
-### Alternative: `go install` (Go 1.22+)
+### Alternative: `go install`
 
 ```bash
 go install github.com/DhilipBinny/claudeorch/cmd/claudeorch@latest
 ```
-
-Places the binary in `$GOBIN` (defaults to `$HOME/go/bin/`).
 
 ### Alternative: build from source
 
@@ -91,129 +97,160 @@ go build -o claudeorch ./cmd/claudeorch
 sudo mv claudeorch /usr/local/bin/
 ```
 
-### Planned (future releases)
+### Uninstall
 
-- Homebrew: `brew install DhilipBinny/claudeorch/claudeorch`
-- Windows binaries (currently Linux & macOS only)
+```bash
+claudeorch uninstall        # interactive, with pre-flight identity summary
+claudeorch uninstall --yes  # non-interactive
+```
 
-## Usage
+Removes `~/.claudeorch/`, the statusline wiring in `~/.claude/settings.json`, and the binary itself. **Never touches `~/.claude/`** — your Claude Code login stays intact.
+
+---
+
+## Quick start
+
+```bash
+# You're already logged in to Claude Code as account A (e.g. work).
+# Save it as a profile FIRST — before logging out, or the tokens are gone.
+claudeorch add work
+
+# Now safely switch.
+claude /logout
+claude /login                     # log in as account B (home)
+claudeorch add home
+
+# From here on, switching is one command:
+claudeorch swap home              # live ~/.claude/ now = home
+claudeorch swap work              # back to work
+
+# Or run both at the same time, one per terminal:
+# Terminal A:
+claudeorch launch work
+# Terminal B:
+claudeorch launch home
+```
 
 ### ⚠️ The golden rule
 
-**Run `claudeorch add <name>` BEFORE you `claude /logout` or `/login` for a different account.**
+**Always run `claudeorch add <name>` BEFORE `claude /logout` or `/login` for a different account.** Logging out deletes the local OAuth tokens — if `claudeorch` hasn't snapshotted them first, they're gone and you'll re-authenticate through the browser to recover that account.
 
-`claude /logout` deletes the local OAuth tokens on disk. If you haven't saved them first via `add`, they are **gone** — you will have to re-authenticate through the browser to get that account back, and any work-in-progress sessions using those tokens may fail.
+The CLI refuses dangerous combinations with a clear error, but saving first is the rule of thumb.
 
-### First-time setup
+---
 
-```bash
-# You're logged in as account A (say, work). Save it FIRST.
-claudeorch add work
+## Commands
 
-# Now it's safe to switch.
-claude /logout
-claude /login                            # log in as account B (home)
+| Command | Purpose |
+|---|---|
+| `claudeorch add <name>` | Snapshot the current Claude login as a named profile. |
+| `claudeorch list` | Table of all profiles with live 5H/7D usage bars. |
+| `claudeorch status` | Dashboard: active profile, usage, running sessions. |
+| `claudeorch swap <name>` | Atomically switch the default account in `~/.claude/`. |
+| `claudeorch launch <name>` | Run `claude` with a per-profile `CLAUDE_CONFIG_DIR` (parallel sessions). |
+| `claudeorch refresh <name>` | Rotate OAuth tokens against Anthropic's token endpoint. |
+| `claudeorch rename <old> <new>` | Rename a profile. |
+| `claudeorch remove <name>` | Remove a profile (zero-overwrites credentials). |
+| `claudeorch doctor` | Diagnostic checks; `--fix` repairs common issues. |
+| `claudeorch statusline install` | Wire a profile-aware statusline into Claude Code. |
+| `claudeorch upgrade` | Self-update to the latest release. |
+| `claudeorch purge` | Wipe all `claudeorch` state (profiles, logs, locks). |
+| `claudeorch uninstall` | Remove state + statusline + binary. |
 
-# Save account B too.
-claudeorch add home
+Run `claudeorch <command> --help` for flags and options.
 
-# From here on, claudeorch has both. You can switch freely.
-```
-
-### Daily use
-
-```bash
-# See who you've saved, who's active, and how much quota is left
-claudeorch list
-
-# Swap the default account (affects future plain 'claude' invocations)
-claudeorch swap home
-
-# Parallel sessions — each terminal runs a different account simultaneously
-terminal 1 $ claudeorch launch work
-terminal 2 $ claudeorch launch home
-
-# Rotate OAuth tokens (when running close to expiry)
-claudeorch refresh work
-
-# Health check
-claudeorch doctor
-```
-
-### Adding a new account later
-
-```bash
-# 1. Your current live account MUST already be saved (otherwise you'll lose it).
-claudeorch list                          # verify current account is listed
-
-# 2. Log in as the new account.
-claude /logout
-claude /login                            # browser OAuth flow as the new account
-
-# 3. Save the new account. Pick a name.
-claudeorch add <newname>
-```
-
-**If `claudeorch add <newname>` errors with "live ~/.claude/ holds account X, which is already saved as Y":** that means the account you just logged in as is already saved under a different name. Either use that existing name, or log in as a truly new account.
-
-### Removing / renaming
-
-```bash
-claudeorch rename old new                # rename a profile
-claudeorch remove work                   # remove a profile (refuses if active without --force)
-claudeorch --force remove work           # remove the active profile (zero-overwrites credentials first)
-```
-
-### Nuclear reset
-
-```bash
-claudeorch purge                         # interactive confirmation
-claudeorch --force purge --yes           # non-interactive — wipes all claudeorch state
-```
-
-`purge` never touches `~/.claude/` — only `~/.claudeorch/`.
-
-Expected output:
-
-```
-PROFILE   EMAIL                   5H                    7D                    RESET
-────────────────────────────────────────────────────────────────────────────────────
-● work    alice@example.com       ████████████░░░  84%   ██████░░░░░░░░░  42%   2h 15m
-  home    alice@personal.dev      ██░░░░░░░░░░░░░  12%   █░░░░░░░░░░░░░░   8%   4h 48m
-```
+---
 
 ## How it works
 
-`claudeorch` reads and writes the files Claude Code uses for authentication (`~/.claude/.credentials.json` and `~/.claude.json`). Each registered account gets a private snapshot in `~/.claudeorch/profiles/`. Swapping is an atomic, lock-protected rename; launching isolated uses `CLAUDE_CONFIG_DIR` to point `claude` at a per-account directory.
+Claude Code stores authentication in two files:
 
-Shared memory (your global `CLAUDE.md` and project history) is symlinked across isolated sessions — same brain, different logins. Credentials, identity, and per-session caches stay per-account.
+- `~/.claude/.credentials.json` — OAuth access + refresh tokens
+- `~/.claude.json` — account identity (email, organization)
 
-## Safety
+`claudeorch` treats these as the canonical state. Each `add` snapshots the pair into `~/.claudeorch/profiles/<name>/`. A `swap` is a lock-protected, two-file atomic rename with backup — if the second rename fails, the first is rolled back, and the `doctor` command can recover from crashes.
 
-- **Atomic writes with rollback** — credentials never end up in a mismatched state, even on crash or power loss.
-- **Session detection** — refuses to swap while any Claude session is running in the default scope, preventing silent identity bleed.
-- **Strict file permissions** — 0700 on directories, 0600 on credential files. `claudeorch doctor` enforces.
-- **Zero telemetry** — no analytics, no phone-home. Three HTTPS calls total, all Anthropic, all user-triggered.
+`launch` takes a different approach: instead of mutating `~/.claude/`, it materializes a per-profile directory in `~/.claudeorch/isolate/<name>/` with fresh credential copies and symlinks for shared content (`CLAUDE.md`, `projects/`, `skills/`), then `exec`s `claude` with `CLAUDE_CONFIG_DIR` pointed at it. Same brain, different login — runnable in parallel without conflict.
 
-## Compatibility
+Every credential write goes through an atomic `temp + fsync + rename + parent-dir fsync` primitive. Every mutating command holds a POSIX `flock(2)` on `~/.claudeorch/locks/.lock` so two `claudeorch` invocations can't interleave. Credentials are zero-overwritten before deletion.
 
-- **Linux** (x86_64, arm64) — Tier 1
-- **macOS** (Apple Silicon + Intel) — Tier 1
-- **Windows** — coming in v1.x. Use WSL2 in the meantime.
-- **Requires:** Claude Code installed and logged in at least once.
+---
 
-## Disclaimer
+## Safety & privacy
 
-This is a third-party tool. It reverse-engineers Claude Code's on-disk file formats and may break when Anthropic updates Claude Code. Fixes released as quickly as possible — open an issue if something breaks. Not affiliated with or endorsed by Anthropic.
+- **Zero telemetry.** Three HTTPS endpoints are ever contacted, all user-triggered: Anthropic's OAuth token endpoint (for `refresh`), Anthropic's usage API (for `list` / `status`), and GitHub's releases API (for `upgrade`).
+- **Strict permissions.** `0700` on all directories, `0600` on credential files — enforced on every write, audited by `doctor`.
+- **Token redaction.** Debug logs (`--debug`) pass every token through a first-10-char redactor. Raw tokens never hit disk or stderr.
+- **Safety gates.** Destructive ops (`swap`, `refresh`, `remove`) refuse while Claude sessions are running unless `--force` is passed.
+- **Atomic writes.** Credential files are never left partial — crash or power loss leaves the old content intact.
+- **Never touches `~/.claude/` unless you ask.** `purge` and `uninstall` wipe `~/.claudeorch/` only.
+
+---
+
+## FAQ
+
+### Will this get my Claude account banned?
+
+No. `claudeorch` only reads and writes the same files Claude Code itself writes, using Anthropic's own OAuth refresh endpoint for token rotation. It's not a proxy, not a wrapper, not an API scraper. It sits on disk, not on the wire.
+
+### Can I run two Claude Code sessions at the same time under different accounts?
+
+Yes — that's `claudeorch launch`. Each launched session gets its own `CLAUDE_CONFIG_DIR` so the two instances never share credentials or session state.
+
+### What happens to my existing Claude Code setup?
+
+Nothing breaks. `claudeorch` snapshots your current login once (`claudeorch add`), then treats it as one of its managed profiles. You can uninstall `claudeorch` any time — `~/.claude/` stays exactly as it was.
+
+### Does it work with Claude API keys (not Claude Code)?
+
+No. `claudeorch` is specifically for **Claude Code** (the `claude` CLI that uses OAuth, installed via npm or the official installer). For plain API keys, use environment variables.
+
+### Which accounts does it support?
+
+Any Claude Code account — Max, Pro, API-subscription-linked. Org-scoped identities work too (multiple organizations under one email).
+
+### Does it support Windows?
+
+Not yet. Linux and macOS are first-class today. Windows is planned for a future release — use WSL2 in the meantime.
+
+### Is it safe to `claudeorch upgrade`?
+
+Yes. The binary is replaced atomically via POSIX rename (the running process keeps its inode until exit), and every download is SHA-256 verified against the release's checksums.
+
+---
+
+## Platform support
+
+- **Linux** (x86_64, arm64) — tier 1
+- **macOS** (Intel, Apple Silicon) — tier 1
+- **Windows** — planned (use WSL2 today)
+
+Requires [Claude Code](https://claude.ai/code) installed and logged in at least once.
+
+---
 
 ## Contributing
 
-Once v0.1.0 ships, contributions welcome. For now:
+Bug reports, feature requests, and PRs welcome:
 
+- 🐛 [Open an issue](https://github.com/DhilipBinny/claudeorch/issues) for bugs or compatibility reports
+- 💬 [Start a discussion](https://github.com/DhilipBinny/claudeorch/discussions) for design feedback
 - ⭐ Star the repo to follow progress
-- 🐛 Open an issue for feature requests or compatibility reports
-- 💬 Start a discussion for design feedback
+
+---
+
+## Disclaimer
+
+`claudeorch` is a third-party tool. It is **not affiliated with, endorsed by, or sponsored by Anthropic**. It interoperates with Claude Code's on-disk file formats and OAuth endpoints and may break if Anthropic changes either — fixes land quickly when that happens.
+
+---
 
 ## License
 
 [MIT](LICENSE) © 2026 Dhilip Binny
+
+---
+
+## Keywords
+
+*Claude Code multiple accounts, Claude Code account switcher, Claude Code profile manager, Claude Max multiple subscriptions, Anthropic CLI multi-account, Claude Code parallel sessions, OAuth token manager Claude, Claude Code usage monitor.*
