@@ -112,6 +112,46 @@ func TestParseCredentials_UnparsableExpiresAt(t *testing.T) {
 	}
 }
 
+func TestParseCredentials_NumericExpiresAt(t *testing.T) {
+	// Real Claude Code writes expiresAt as milliseconds-since-epoch (number).
+	// Verified against ~/.claude/.credentials.json on reference machine.
+	blob := []byte(`{
+		"claudeAiOauth": {
+			"accessToken":  "tok_abc",
+			"refreshToken": "ref_xyz",
+			"expiresAt":    1776459847964
+		}
+	}`)
+	creds, err := ParseCredentials(blob)
+	if err != nil {
+		t.Fatalf("ParseCredentials: %v", err)
+	}
+	if !creds.ExpiresAtWasNumeric {
+		t.Error("ExpiresAtWasNumeric = false, want true")
+	}
+	want := time.UnixMilli(1776459847964).UTC()
+	if !creds.ExpiresAt.Equal(want) {
+		t.Errorf("ExpiresAt = %v, want %v", creds.ExpiresAt, want)
+	}
+}
+
+func TestParseCredentials_StringExpiresAt_FlaggedAsNonNumeric(t *testing.T) {
+	blob := []byte(`{
+		"claudeAiOauth": {
+			"accessToken":  "tok_abc",
+			"refreshToken": "ref_xyz",
+			"expiresAt":    "2026-12-31T00:00:00Z"
+		}
+	}`)
+	creds, err := ParseCredentials(blob)
+	if err != nil {
+		t.Fatalf("ParseCredentials: %v", err)
+	}
+	if creds.ExpiresAtWasNumeric {
+		t.Error("ExpiresAtWasNumeric = true for string input, want false")
+	}
+}
+
 func TestParseCredentials_RenamedField_ReturnsSchemaError(t *testing.T) {
 	// If Claude renames the top-level key we should get ErrSchemaIncompatible,
 	// not a silent empty struct.

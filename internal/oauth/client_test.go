@@ -54,6 +54,41 @@ func TestMergeCredentials_PreservesUnknownFields(t *testing.T) {
 	}
 }
 
+func TestMergeCredentials_NumericExpiresAt_StaysNumeric(t *testing.T) {
+	// Real Claude Code writes expiresAt as an integer (ms epoch).
+	// A refresh must NOT rewrite it as a string — doing so could confuse
+	// Claude Code's own parser.
+	orig := []byte(`{"claudeAiOauth":{"accessToken":"old","refreshToken":"old_r","expiresAt":1776459847964,"scopes":["x"]}}`)
+	result, err := mergeCredentials(orig, "new_access", "new_refresh",
+		time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Must not contain a string-shaped expiresAt.
+	if strings.Contains(string(result), `"expiresAt":"`) {
+		t.Errorf("numeric expiresAt was wrongly rewritten as string: %s", result)
+	}
+	// Must contain numeric ms-epoch.
+	var out map[string]any
+	_ = json.Unmarshal(result, &out)
+	exp := out["claudeAiOauth"].(map[string]any)["expiresAt"]
+	if _, ok := exp.(float64); !ok {
+		t.Errorf("expiresAt should be numeric, got %T: %v", exp, exp)
+	}
+}
+
+func TestMergeCredentials_StringExpiresAt_StaysString(t *testing.T) {
+	orig := []byte(`{"claudeAiOauth":{"accessToken":"old","refreshToken":"old_r","expiresAt":"2020-01-01T00:00:00Z"}}`)
+	result, err := mergeCredentials(orig, "new_access", "new_refresh",
+		time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(result), `"expiresAt":"2030-01-01T00:00:00Z"`) {
+		t.Errorf("string expiresAt was wrongly rewritten or dropped: %s", result)
+	}
+}
+
 func TestMergeCredentials_EmptyRefreshToken_KeepsOld(t *testing.T) {
 	orig := fakeCreds("old_access", "old_refresh", "")
 	result, err := mergeCredentials(orig, "new_access", "",

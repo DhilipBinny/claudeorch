@@ -49,7 +49,6 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 		return fmt.Errorf("load store: %w", err)
 	}
 
-	// Sort profile names for stable output.
 	names := make([]string, 0, len(store.Profiles))
 	for n := range store.Profiles {
 		names = append(names, n)
@@ -60,22 +59,26 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 	for _, name := range names {
 		p := store.Profiles[name]
 		row := ui.ProfileRow{
-			Name:        name,
-			Email:       p.Email,
-			OrgName:     p.OrganizationName,
-			Active:      store.IsActive(name),
-			NeedsReauth: p.NeedsReauth,
-			UsagePct:    -1,
-			UsageLabel:  "-",
-			ResetLabel:  "-",
+			Name:          name,
+			Email:         p.Email,
+			OrgName:       p.OrganizationName,
+			Active:        store.IsActive(name),
+			NeedsReauth:   p.NeedsReauth,
+			FiveHourPct:   -1,
+			SevenDayPct:   -1,
+			FiveHourReset: "-",
+			SevenDayReset: "-",
 		}
 
 		if !noUsage {
-			if u, usageErr := fetchProfileUsage(name); usageErr == nil && u != nil {
-				row.UsagePct = u.PercentUsed()
-				row.UsageLabel = formatTokens(u.UsedTokens, u.LimitTokens)
-				if !u.ResetAt.IsZero() {
-					row.ResetLabel = formatDuration(time.Until(u.ResetAt))
+			if u, err := fetchProfileUsage(name); err == nil && u != nil {
+				row.FiveHourPct = u.FiveHour.Percent
+				row.SevenDayPct = u.SevenDay.Percent
+				if !u.FiveHour.ResetsAt.IsZero() {
+					row.FiveHourReset = formatDuration(time.Until(u.FiveHour.ResetsAt))
+				}
+				if !u.SevenDay.ResetsAt.IsZero() {
+					row.SevenDayReset = formatDuration(time.Until(u.SevenDay.ResetsAt))
 				}
 			}
 		}
@@ -89,7 +92,6 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 	return nil
 }
 
-// fetchProfileUsage reads stored credentials for name and calls the usage API.
 func fetchProfileUsage(name string) (*usage.Usage, error) {
 	profileDir, err := paths.ProfileDir(name)
 	if err != nil {
@@ -109,17 +111,17 @@ func fetchProfileUsage(name string) (*usage.Usage, error) {
 func printListJSON(cmd *cobra.Command, rows []ui.ProfileRow) error {
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		m := map[string]any{
-			"name":         r.Name,
-			"email":        r.Email,
-			"org":          r.OrgName,
-			"active":       r.Active,
-			"needs_reauth": r.NeedsReauth,
-			"usage_pct":    r.UsagePct,
-			"usage_label":  r.UsageLabel,
-			"reset_label":  r.ResetLabel,
-		}
-		out = append(out, m)
+		out = append(out, map[string]any{
+			"name":            r.Name,
+			"email":           r.Email,
+			"org":             r.OrgName,
+			"active":          r.Active,
+			"needs_reauth":    r.NeedsReauth,
+			"five_hour_pct":   r.FiveHourPct,
+			"seven_day_pct":   r.SevenDayPct,
+			"five_hour_reset": r.FiveHourReset,
+			"seven_day_reset": r.SevenDayReset,
+		})
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -127,26 +129,6 @@ func printListJSON(cmd *cobra.Command, rows []ui.ProfileRow) error {
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), string(data))
 	return nil
-}
-
-func formatTokens(used, limit int64) string {
-	if limit <= 0 {
-		return formatK(used)
-	}
-	return fmt.Sprintf("%s / %s", formatK(used), formatK(limit))
-}
-
-func formatK(n int64) string {
-	switch {
-	case n >= 1_000_000_000:
-		return fmt.Sprintf("%.1fB", float64(n)/1_000_000_000)
-	case n >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-	case n >= 1_000:
-		return fmt.Sprintf("%.1fK", float64(n)/1_000)
-	default:
-		return fmt.Sprintf("%d", n)
-	}
 }
 
 func formatDuration(d time.Duration) string {

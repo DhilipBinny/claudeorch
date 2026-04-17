@@ -8,19 +8,18 @@ import (
 )
 
 func TestBar_Thresholds(t *testing.T) {
-	// Disable color so we test the ASCII path predictably.
 	color.NoColor = true
 	t.Cleanup(func() { color.NoColor = false })
 
 	cases := []struct {
 		pct     float64
-		wantMin int // minimum number of '#' filled chars
+		wantMin int
 	}{
 		{0.0, 0},
-		{0.5, 7},  // 50% → 7 of 15
-		{1.0, 15}, // 100% → all filled
-		{-0.1, 0}, // clamp to 0
-		{1.1, 15}, // clamp to 1
+		{0.5, 7},
+		{1.0, 15},
+		{-0.1, 0},
+		{1.1, 15},
 	}
 
 	for _, tc := range cases {
@@ -59,29 +58,30 @@ func TestRenderTable_Empty(t *testing.T) {
 	}
 }
 
-func TestRenderTable_Rows(t *testing.T) {
+func TestRenderTable_Rows_ShowsBothWindows(t *testing.T) {
 	color.NoColor = true
 	t.Cleanup(func() { color.NoColor = false })
 
 	rows := []ProfileRow{
 		{
-			Name:       "work",
-			Email:      "alice@example.com",
-			OrgName:    "Acme",
-			Active:     true,
-			UsagePct:   0.45,
-			UsageLabel: "450K / 1M",
-			ResetLabel: "5d",
+			Name:          "work",
+			Email:         "alice@example.com",
+			OrgName:       "Acme",
+			Active:        true,
+			FiveHourPct:   0.09,
+			SevenDayPct:   0.07,
+			FiveHourReset: "2h15m",
+			SevenDayReset: "6d5h",
 		},
 		{
-			Name:        "home",
-			Email:       "alice@personal.dev",
-			OrgName:     "",
-			Active:      false,
-			NeedsReauth: true,
-			UsagePct:    -1,
-			UsageLabel:  "-",
-			ResetLabel:  "-",
+			Name:          "home",
+			Email:         "alice@personal.dev",
+			OrgName:       "",
+			NeedsReauth:   true,
+			FiveHourPct:   -1,
+			SevenDayPct:   -1,
+			FiveHourReset: "-",
+			SevenDayReset: "-",
 		},
 	}
 
@@ -89,15 +89,51 @@ func TestRenderTable_Rows(t *testing.T) {
 	RenderTable(&sb, rows)
 	out := sb.String()
 
-	for _, want := range []string{"work", "alice@example.com", "Acme", "450K / 1M", "home", "alice@personal.dev", "-"} {
+	for _, want := range []string{
+		"5H", "7D",
+		"PROFILE", "EMAIL", "ORG",
+		"work", "home",
+		"alice@example.com",
+		"Acme",
+		"2h15m", "6d5h",
+		"9%", "7%",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table missing %q:\n%s", want, out)
 		}
 	}
 }
 
-func TestPercentUsed_ZeroLimit(t *testing.T) {
-	// Import usage package would create a cycle — test PercentUsed logic inline.
-	// Just test the ui layer independently here.
-	_ = Bar(0)
+func TestRenderTable_UnavailableUsage_ShowsDash(t *testing.T) {
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = false })
+
+	rows := []ProfileRow{{
+		Name:          "x",
+		Email:         "x@x.com",
+		FiveHourPct:   -1,
+		SevenDayPct:   -1,
+		FiveHourReset: "-",
+		SevenDayReset: "-",
+	}}
+	var sb strings.Builder
+	RenderTable(&sb, rows)
+	out := sb.String()
+	// No percentage should appear when usage is unavailable.
+	if strings.Contains(out, "%") {
+		t.Errorf("unavailable usage should not render %% sign:\n%s", out)
+	}
+}
+
+func TestStripANSI(t *testing.T) {
+	cases := map[string]string{
+		"\x1b[31mred\x1b[0m":    "red",
+		"plain":                 "plain",
+		"\x1b[1;32mgreen\x1b[0m": "green",
+	}
+	for in, want := range cases {
+		if got := stripANSI(in); got != want {
+			t.Errorf("stripANSI(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

@@ -1,5 +1,10 @@
 // Package usage fetches per-account API usage from Anthropic's usage endpoint.
 // A single call per profile is made — no caching, no background polling.
+//
+// The endpoint returns utilization percentages (0-100) and reset timestamps
+// for two rolling windows: the 5-hour burst window and the 7-day period.
+// Additional per-model and per-feature breakdowns (seven_day_sonnet etc.)
+// are returned by the server but not currently surfaced.
 package usage
 
 import (
@@ -28,32 +33,33 @@ var usageEndpoint = defaultUsageEndpoint
 // ErrUnauthorized is returned when the API returns 401 — token invalid or expired.
 var ErrUnauthorized = errors.New("usage: unauthorized (token expired or invalid)")
 
-// Usage holds the counters returned by the usage API.
-type Usage struct {
-	// UsedTokens is the total input+output tokens consumed this period.
-	UsedTokens int64
-	// LimitTokens is the plan limit for this period. Zero means no known limit.
-	LimitTokens int64
-	// ResetAt is when the usage counter resets. Zero means unknown.
-	ResetAt time.Time
+// Window is one reporting window (5-hour or 7-day).
+type Window struct {
+	// Percent is the fraction of the limit consumed, 0.0 – 1.0.
+	// The server reports percentages 0-100; we divide by 100 at parse time.
+	Percent float64
+	// ResetsAt is when the window resets. Zero time means unknown.
+	ResetsAt time.Time
 }
 
-// PercentUsed returns the fraction of the limit consumed (0.0 – 1.0).
-// Returns 0 when LimitTokens is 0 (unknown limit).
-func (u *Usage) PercentUsed() float64 {
-	if u.LimitTokens <= 0 {
-		return 0
-	}
-	p := float64(u.UsedTokens) / float64(u.LimitTokens)
-	if p > 1 {
-		p = 1
-	}
-	return p
+// Usage holds the rolling-window counters returned by the usage API.
+type Usage struct {
+	FiveHour Window
+	SevenDay Window
+}
+
+// rawWindow is the server's wire format for each window entry.
+// resets_at is a pointer so we can distinguish "null" (explicitly absent)
+// from an empty string, and RFC3339Nano handles both microsecond-precision
+// timestamps with offsets and plain RFC3339.
+type rawWindow struct {
+	Utilization float64 `json:"utilization"`
+	ResetsAt    *string `json:"resets_at"`
 }
 
 // Fetch retrieves usage for the account associated with accessToken.
 // Returns ErrUnauthorized on 401. Other non-2xx statuses return a generic error.
-// Times out after 5 seconds regardless of ctx deadline (whichever is shorter).
+// Times out after requestTimeout regardless of ctx deadline (whichever is shorter).
 func Fetch(ctx context.Context, accessToken string) (*Usage, error) {
 	tCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -89,30 +95,37 @@ func Fetch(ctx context.Context, accessToken string) (*Usage, error) {
 	}
 
 	var raw struct {
-		Data []struct {
-			InputTokens  int64 `json:"input_tokens"`
-			OutputTokens int64 `json:"output_tokens"`
-		} `json:"data"`
-		Limit   int64  `json:"limit"`
-		ResetAt string `json:"reset_at"`
+		FiveHour *rawWindow `json:"five_hour"`
+		SevenDay *rawWindow `json:"seven_day"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("usage.Fetch: parse: %w", err)
 	}
 
-	var total int64
-	for _, d := range raw.Data {
-		total += d.InputTokens + d.OutputTokens
-	}
-
-	var resetAt time.Time
-	if raw.ResetAt != "" {
-		resetAt, _ = time.Parse(time.RFC3339, raw.ResetAt)
-	}
-
 	return &Usage{
-		UsedTokens:  total,
-		LimitTokens: raw.Limit,
-		ResetAt:     resetAt,
+		FiveHour: toWindow(raw.FiveHour),
+		SevenDay: toWindow(raw.SevenDay),
 	}, nil
+}
+
+// toWindow converts the server's rawWindow into our Window type.
+// Missing (nil) or malformed timestamps yield a zero time — the caller
+// should format that as a dash.
+func toWindow(raw *rawWindow) Window {
+	if raw == nil {
+		return Window{}
+	}
+	w := Window{Percent: raw.Utilization / 100.0}
+	if w.Percent < 0 {
+		w.Percent = 0
+	}
+	if w.Percent > 1 {
+		w.Percent = 1
+	}
+	if raw.ResetsAt != nil && *raw.ResetsAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, *raw.ResetsAt); err == nil {
+			w.ResetsAt = t
+		}
+	}
+	return w
 }

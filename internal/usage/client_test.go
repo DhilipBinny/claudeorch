@@ -18,21 +18,19 @@ func withEndpoint(t *testing.T, url string) {
 	t.Cleanup(func() { usageEndpoint = orig })
 }
 
-func TestFetch_Happy(t *testing.T) {
-	reset := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+func TestFetch_Happy_RealShape(t *testing.T) {
 	var gotAuth, gotBeta string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotBeta = r.Header.Get("anthropic-beta")
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": []map[string]any{
-				{"input_tokens": 500000, "output_tokens": 200000},
-				{"input_tokens": 100000, "output_tokens": 50000},
-			},
-			"limit":    2000000,
-			"reset_at": reset.Format(time.RFC3339),
-		})
+		// Exact shape observed from the real endpoint.
+		_, _ = w.Write([]byte(`{
+			"five_hour":  {"utilization": 9.0, "resets_at": "2026-04-17T16:00:00.699600+00:00"},
+			"seven_day":  {"utilization": 7.5, "resets_at": "2026-04-23T20:00:00.699617+00:00"},
+			"seven_day_sonnet": {"utilization": 3.0, "resets_at": "2026-04-23T20:00:00.699625+00:00"},
+			"extra_usage": {"is_enabled": true, "monthly_limit": 7000, "used_credits": 100.0, "utilization": 1.4, "currency": "USD"}
+		}`))
 	}))
 	defer srv.Close()
 	withEndpoint(t, srv.URL)
@@ -41,20 +39,85 @@ func TestFetch_Happy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if u.UsedTokens != 850000 {
-		t.Errorf("UsedTokens = %d, want 850000", u.UsedTokens)
+	if u.FiveHour.Percent < 0.089 || u.FiveHour.Percent > 0.091 {
+		t.Errorf("FiveHour.Percent = %f, want ~0.09", u.FiveHour.Percent)
 	}
-	if u.LimitTokens != 2000000 {
-		t.Errorf("LimitTokens = %d, want 2000000", u.LimitTokens)
+	if u.SevenDay.Percent < 0.074 || u.SevenDay.Percent > 0.076 {
+		t.Errorf("SevenDay.Percent = %f, want ~0.075", u.SevenDay.Percent)
 	}
-	if !u.ResetAt.Equal(reset) {
-		t.Errorf("ResetAt = %v, want %v", u.ResetAt, reset)
+	if u.FiveHour.ResetsAt.IsZero() {
+		t.Error("FiveHour.ResetsAt should be parsed")
+	}
+	if u.SevenDay.ResetsAt.IsZero() {
+		t.Error("SevenDay.ResetsAt should be parsed")
 	}
 	if gotAuth != "Bearer test-token" {
-		t.Errorf("Authorization header = %q, want Bearer test-token", gotAuth)
+		t.Errorf("Authorization header = %q", gotAuth)
 	}
 	if gotBeta != oauthBetaHdr {
-		t.Errorf("anthropic-beta header = %q, want %q", gotBeta, oauthBetaHdr)
+		t.Errorf("anthropic-beta header = %q", gotBeta)
+	}
+}
+
+func TestFetch_ClampsUtilizationToZeroAndOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"five_hour": {"utilization": 150.0, "resets_at": null},
+			"seven_day": {"utilization": -5.0,  "resets_at": null}
+		}`))
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL)
+
+	u, err := Fetch(context.Background(), "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.FiveHour.Percent != 1.0 {
+		t.Errorf("FiveHour overflow not clamped: %f", u.FiveHour.Percent)
+	}
+	if u.SevenDay.Percent != 0.0 {
+		t.Errorf("SevenDay negative not clamped: %f", u.SevenDay.Percent)
+	}
+}
+
+func TestFetch_MissingWindows_ReturnsZeroValues(t *testing.T) {
+	// If server omits five_hour or seven_day entirely, don't crash.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL)
+
+	u, err := Fetch(context.Background(), "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.FiveHour.Percent != 0 || !u.FiveHour.ResetsAt.IsZero() {
+		t.Errorf("FiveHour should be zero-valued: %+v", u.FiveHour)
+	}
+	if u.SevenDay.Percent != 0 || !u.SevenDay.ResetsAt.IsZero() {
+		t.Errorf("SevenDay should be zero-valued: %+v", u.SevenDay)
+	}
+}
+
+func TestFetch_NullResetsAt_IsZeroTime(t *testing.T) {
+	// Real API sometimes sends "resets_at": null.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"five_hour": {"utilization": 50.0, "resets_at": null},
+			"seven_day": {"utilization": 50.0, "resets_at": null}
+		}`))
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL)
+
+	u, err := Fetch(context.Background(), "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !u.FiveHour.ResetsAt.IsZero() {
+		t.Error("null resets_at should yield zero time")
 	}
 }
 
@@ -118,22 +181,34 @@ func TestFetch_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestPercentUsed(t *testing.T) {
-	cases := []struct {
-		used, limit int64
-		want        float64
-	}{
-		{0, 1000, 0},
-		{500, 1000, 0.5},
-		{1000, 1000, 1.0},
-		{1200, 1000, 1.0}, // clamped
-		{100, 0, 0},       // unknown limit
+// Verifies json.RawMessage-free parsing still handles both microsecond-precision
+// and plain RFC3339 timestamps (both are in the wild).
+func TestFetch_TimestampFormats(t *testing.T) {
+	cases := []string{
+		"2026-04-17T16:00:00.699600+00:00",
+		"2026-04-17T16:00:00Z",
+		"2026-04-17T16:00:00.1Z",
 	}
-	for _, tc := range cases {
-		u := &Usage{UsedTokens: tc.used, LimitTokens: tc.limit}
-		got := u.PercentUsed()
-		if got != tc.want {
-			t.Errorf("PercentUsed(%d/%d) = %.3f, want %.3f", tc.used, tc.limit, got, tc.want)
-		}
+	for _, ts := range cases {
+		ts := ts
+		t.Run(ts, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{
+				"five_hour": map[string]any{"utilization": 50.0, "resets_at": ts},
+				"seven_day": map[string]any{"utilization": 50.0, "resets_at": nil},
+			})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(body)
+			}))
+			defer srv.Close()
+			withEndpoint(t, srv.URL)
+
+			u, err := Fetch(context.Background(), "tok")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if u.FiveHour.ResetsAt.IsZero() {
+				t.Errorf("timestamp %q failed to parse", ts)
+			}
+		})
 	}
 }

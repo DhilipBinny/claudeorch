@@ -133,6 +133,10 @@ func Refresh(ctx context.Context, credsBlob []byte) ([]byte, error) {
 // mergeCredentials merges the new OAuth fields into the original blob.
 // It unmarshals into map[string]any, updates only the specific sub-fields,
 // and re-marshals, so unknown fields are preserved.
+//
+// expiresAt is written in the same JSON shape (numeric ms-epoch vs RFC3339
+// string) as the original blob, so Claude Code's own parser keeps reading
+// the file correctly after a refresh.
 func mergeCredentials(orig []byte, accessToken, refreshToken string, expiresAt time.Time) ([]byte, error) {
 	var blob map[string]any
 	if err := json.Unmarshal(orig, &blob); err != nil {
@@ -148,7 +152,15 @@ func mergeCredentials(orig []byte, accessToken, refreshToken string, expiresAt t
 	if refreshToken != "" {
 		oauth["refreshToken"] = refreshToken
 	}
-	oauth["expiresAt"] = expiresAt.Format(time.RFC3339)
+	// Preserve the original type of expiresAt (numeric ms-epoch or RFC3339 string).
+	// json.Unmarshal into map[string]any produces float64 for JSON numbers; bare
+	// string otherwise. Missing key defaults to numeric (Claude Code's current shape).
+	_, wasString := oauth["expiresAt"].(string)
+	if wasString {
+		oauth["expiresAt"] = expiresAt.UTC().Format(time.RFC3339)
+	} else {
+		oauth["expiresAt"] = expiresAt.UTC().UnixMilli()
+	}
 	blob["claudeAiOauth"] = oauth
 
 	return json.Marshal(blob)

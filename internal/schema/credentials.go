@@ -30,7 +30,12 @@ var ErrSchemaIncompatible = errors.New("schema: file structure incompatible with
 type Credentials struct {
 	AccessToken  string    // claudeAiOauth.accessToken
 	RefreshToken string    // claudeAiOauth.refreshToken
-	ExpiresAt    time.Time // claudeAiOauth.expiresAt (RFC3339 string in file)
+	ExpiresAt    time.Time // claudeAiOauth.expiresAt
+
+	// ExpiresAtWasNumeric reports whether the original expiresAt field was a
+	// numeric value (ms since epoch) rather than an RFC3339 string. Needed by
+	// the refresh path so it can write back the same type Claude Code uses.
+	ExpiresAtWasNumeric bool
 
 	// Raw is the full original JSON blob, suitable for opaque passthrough to
 	// the refresh client which must preserve unknown fields.
@@ -57,11 +62,15 @@ func ParseCredentials(data []byte) (*Credentials, error) {
 
 	// Minimal envelope — we don't unmarshal into a full struct to avoid
 	// dropping unknown fields at the top level.
+	//
+	// expiresAt is declared as json.RawMessage because Claude Code has written
+	// two shapes over time: numeric milliseconds-since-epoch (current) and
+	// RFC3339 string (older drafts / some forks). We accept both.
 	var envelope struct {
 		ClaudeAiOauth *struct {
-			AccessToken  string `json:"accessToken"`
-			RefreshToken string `json:"refreshToken"`
-			ExpiresAt    string `json:"expiresAt"` // RFC3339
+			AccessToken  string          `json:"accessToken"`
+			RefreshToken string          `json:"refreshToken"`
+			ExpiresAt    json.RawMessage `json:"expiresAt"`
 		} `json:"claudeAiOauth"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
@@ -78,22 +87,43 @@ func ParseCredentials(data []byte) (*Credentials, error) {
 		return nil, fmt.Errorf("%w: empty refreshToken (not logged in or corrupted)", ErrSchemaIncompatible)
 	}
 
-	var expiresAt time.Time
-	if oauth.ExpiresAt != "" {
-		t, err := time.Parse(time.RFC3339, oauth.ExpiresAt)
-		if err != nil {
-			// expiresAt is present but unparseable — treat as unknown expiry,
-			// don't abort. Refresh logic treats zero time as "may be expired".
-			expiresAt = time.Time{}
-		} else {
-			expiresAt = t
-		}
-	}
+	expiresAt, numeric := parseExpiresAt(oauth.ExpiresAt)
 
 	return &Credentials{
-		AccessToken:  oauth.AccessToken,
-		RefreshToken: oauth.RefreshToken,
-		ExpiresAt:    expiresAt,
-		Raw:          data,
+		AccessToken:         oauth.AccessToken,
+		RefreshToken:        oauth.RefreshToken,
+		ExpiresAt:           expiresAt,
+		ExpiresAtWasNumeric: numeric,
+		Raw:                 data,
 	}, nil
+}
+
+// parseExpiresAt accepts either a JSON number (milliseconds since epoch) or
+// a JSON string (RFC3339) and returns the parsed time plus a flag indicating
+// which shape was read. Unparseable or absent values yield a zero time.
+func parseExpiresAt(raw json.RawMessage) (t time.Time, numeric bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return time.Time{}, false
+	}
+	// Numeric branch: starts with a digit or minus sign.
+	if raw[0] != '"' {
+		var n int64
+		if err := json.Unmarshal(raw, &n); err != nil {
+			return time.Time{}, true
+		}
+		return time.UnixMilli(n).UTC(), true
+	}
+	// String branch.
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return time.Time{}, false
+	}
+	if s == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, false
 }
