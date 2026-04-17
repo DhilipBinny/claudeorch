@@ -91,13 +91,15 @@ download() {
     URL="$1"; OUT="$2"; SHOW_PROGRESS="${3:-no}"
     if have curl; then
         if [ "$SHOW_PROGRESS" = "yes" ]; then
-            # -S shows errors, --progress-bar shows a simple one-line bar.
-            curl -fSL --progress-bar "$URL" -o "$OUT"
+            # curl's default progress meter shows received/total size, speed,
+            # and ETA. Dropping -s enables it; -S keeps errors visible.
+            curl -fSL "$URL" -o "$OUT"
         else
             curl -fsSL "$URL" -o "$OUT"
         fi
     else
         if [ "$SHOW_PROGRESS" = "yes" ]; then
+            # wget --show-progress shows size, percentage, speed, and ETA.
             wget --show-progress -qO "$OUT" "$URL"
         else
             wget -qO "$OUT" "$URL"
