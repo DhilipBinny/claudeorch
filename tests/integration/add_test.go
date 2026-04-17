@@ -132,6 +132,47 @@ func TestAdd_InvalidName_WithDuplicateIdentity(t *testing.T) {
 	r.AssertContains(t, "invalid")
 }
 
+// TestAdd_SetsActive pins the UX: because 'add' always copies credentials
+// from live ~/.claude/, the newly-added profile IS the live account — so
+// the store must mark it active. Otherwise 'status' shows "(none)" even
+// after a clean add, which looks broken to users.
+func TestAdd_SetsActive(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+
+	r := env.Run("status")
+	r.AssertSuccess(t)
+	r.AssertOutputContains(t, "work")
+	if strings.Contains(r.Stdout, "Active profile: (none)") {
+		t.Errorf("status shows 'Active profile: (none)' after add — active pointer not set:\n%s", r.Stdout)
+	}
+}
+
+// TestAdd_DuplicateUpdatesActive pins the UX for the refresh-in-place path:
+// if live ~/.claude/ matches an existing saved profile (because the user
+// logged back in as that account), adding it again must mark THAT profile
+// active — otherwise a stale active pointer from before the re-login hangs
+// around.
+func TestAdd_DuplicateUpdatesActive(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+
+	// Second add of the same identity — refresh-in-place path.
+	env.Run("add", "work2").AssertSuccess(t)
+
+	r := env.Run("status")
+	if strings.Contains(r.Stdout, "Active profile: (none)") {
+		t.Errorf("refresh-in-place should keep/set active, got:\n%s", r.Stdout)
+	}
+	// First 'work' absorbed the identity; second call's 'work2' arg is ignored
+	// because refresh-in-place takes over. 'work' must be active.
+	r.AssertOutputContains(t, "Active profile: work")
+}
+
 // TestAdd_StoreVersion verifies store.json always contains "version":1.
 func TestAdd_StoreVersion(t *testing.T) {
 	env := NewEnv(t)

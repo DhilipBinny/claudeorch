@@ -123,6 +123,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 		now := time.Now().UTC()
 		store.Profiles[existingName].LastUsedAt = now
+		// 'add' always reads from live ~/.claude/, so whatever profile just
+		// absorbed that identity IS the one currently live. Keep the store's
+		// 'active' pointer in sync with reality.
+		if setErr := store.SetActive(existingName); setErr != nil {
+			return fmt.Errorf("set active: %w", setErr)
+		}
 		if err := store.Save(storePath); err != nil {
 			return fmt.Errorf("save store: %w", err)
 		}
@@ -176,6 +182,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		OrganizationName: identity.OrganizationName,
 		CreatedAt:        time.Now().UTC(),
 		Source:           profile.SourceOAuth,
+	}
+	// The credentials we just copied came from live ~/.claude/, so this new
+	// profile IS the live account. Mark it active so 'status' and 'list'
+	// reflect reality out of the box.
+	if setErr := store.SetActive(name); setErr != nil {
+		return fmt.Errorf("set active: %w", setErr)
 	}
 	if err := store.Save(storePath); err != nil {
 		return fmt.Errorf("save store: %w", err)

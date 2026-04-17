@@ -16,7 +16,9 @@ func TestRemove_Happy(t *testing.T) {
 	env.WriteCredentials("tok_a", "ref_a")
 	env.Run("add", "work").AssertSuccess(t)
 
-	env.Run("remove", "work").AssertSuccess(t)
+	// 'add' marks the new profile active (it IS the live account on disk),
+	// so plain 'remove' refuses for safety. Use --force for this test.
+	env.Run("--force", "remove", "work").AssertSuccess(t)
 
 	if env.ProfileExists("work") {
 		t.Error("profile directory still exists after remove")
@@ -52,7 +54,7 @@ func TestRemove_AlsoCleansIsolateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env.Run("remove", "work").AssertSuccess(t)
+	env.Run("--force", "remove", "work").AssertSuccess(t)
 
 	if _, err := os.Stat(isolateDir); !os.IsNotExist(err) {
 		t.Errorf("isolate dir still exists after remove: %v", err)
