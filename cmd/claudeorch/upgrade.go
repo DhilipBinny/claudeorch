@@ -91,13 +91,15 @@ func runUpgrade(cmd *cobra.Command, checkOnly bool, pinned string) error {
 	binURL := fmt.Sprintf("%s/%s/%s", releasesBaseURL, target, assetName)
 	sumsURL := fmt.Sprintf("%s/%s/SHA256SUMS", releasesBaseURL, target)
 
-	fmt.Fprintf(out, "\nDownloading %s ... ", assetName)
-	binData, err := fetchAndVerify(ctx, binURL, sumsURL, assetName)
+	fmt.Fprintf(out, "\nDownloading %s\n", assetName)
+	// Progress output goes to stderr (status, not result), so piping the
+	// upgrade output doesn't capture progress-bar noise.
+	binData, err := fetchAndVerify(ctx, binURL, sumsURL, assetName, cmd.ErrOrStderr())
 	if err != nil {
-		fmt.Fprintln(out, "failed")
+		fmt.Fprintln(cmd.ErrOrStderr(), "\ndownload failed")
 		return fmt.Errorf("download: %w", err)
 	}
-	fmt.Fprintf(out, "done (%d bytes, sha256 verified)\n", len(binData))
+	fmt.Fprintf(out, "  verified (%s, sha256 OK)\n", humanBytes(int64(len(binData))))
 
 	if err := replaceRunningBinary(binData); err != nil {
 		return fmt.Errorf("install: %w", err)
@@ -128,9 +130,9 @@ func fetchLatestTag(ctx context.Context) (string, error) {
 	return releases[0].TagName, nil
 }
 
-// fetchAndVerify downloads the binary and its SHA256SUMS, verifies the hash
-// for assetName, and returns the binary bytes.
-func fetchAndVerify(ctx context.Context, binURL, sumsURL, assetName string) ([]byte, error) {
+// fetchAndVerify downloads the binary (with progress output) and its
+// SHA256SUMS, verifies the hash for assetName, and returns the binary bytes.
+func fetchAndVerify(ctx context.Context, binURL, sumsURL, assetName string, progress io.Writer) ([]byte, error) {
 	sumsData, err := httpGet(ctx, sumsURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch SHA256SUMS: %w", err)
@@ -140,7 +142,7 @@ func fetchAndVerify(ctx context.Context, binURL, sumsURL, assetName string) ([]b
 		return nil, fmt.Errorf("no checksum for %s in SHA256SUMS", assetName)
 	}
 
-	binData, err := httpGet(ctx, binURL)
+	binData, err := httpDownloadWithProgress(ctx, binURL, progress)
 	if err != nil {
 		return nil, fmt.Errorf("fetch binary: %w", err)
 	}
@@ -225,4 +227,207 @@ func httpGet(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("%s: status %d", url, resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, httpMaxBody))
+}
+
+// httpDownloadWithProgress is httpGet + a live progress indicator written
+// to 'progress'. Uses Content-Length when the server provides it to render
+// "<received> / <total>  <pct>%  <speed>"; otherwise just byte count + speed.
+func httpDownloadWithProgress(ctx context.Context, url string, progress io.Writer) ([]byte, error) {
+	tCtx, cancel := context.WithTimeout(ctx, httpTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(tCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "claudeorch-upgrade/"+Version)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("%s: status %d", url, resp.StatusCode)
+	}
+	pr := &progressReader{
+		r:     io.LimitReader(resp.Body, httpMaxBody),
+		total: resp.ContentLength,
+		out:   progress,
+		start: time.Now(),
+		tty:   stderrIsTerminal(),
+	}
+	data, readErr := io.ReadAll(pr)
+	pr.finish()
+	return data, readErr
+}
+
+// progressReader wraps an io.Reader and prints a live download progress
+// bar to 'out'. Two display modes:
+//
+//   - TTY: an in-place 20-cell bar with bytes/percent/speed/ETA,
+//     rate-limited to ~10 fps and redrawn via \r on each tick.
+//   - non-TTY: emit one line every ~25% so CI logs stay readable
+//     without drowning in progress updates.
+//
+// Speed is an EWMA over the last ~1 s of byte deltas so the number
+// doesn't jump around between ticks.
+type progressReader struct {
+	r        io.Reader
+	total    int64 // -1 when server omits Content-Length
+	read     int64
+	start    time.Time
+	lastTick time.Time
+	lastRead int64
+	speed    float64 // EWMA bytes/sec
+	out      io.Writer
+	tty      bool
+	// non-TTY progress throttling: emit a milestone line when we cross
+	// the next threshold.
+	nextMilestone float64
+}
+
+const (
+	barWidth     = 20
+	tickInterval = 100 * time.Millisecond
+	ewmaAlpha    = 0.3 // smoothing factor — higher = more reactive
+)
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.read += int64(n)
+	now := time.Now()
+	if now.Sub(p.lastTick) >= tickInterval || err != nil {
+		p.update(now)
+		p.render()
+		p.lastTick = now
+	}
+	return n, err
+}
+
+// update refreshes the EWMA speed based on bytes transferred since the last tick.
+func (p *progressReader) update(now time.Time) {
+	if p.lastTick.IsZero() {
+		// First tick — seed speed from overall rate so it's non-zero immediately.
+		elapsed := now.Sub(p.start).Seconds()
+		if elapsed > 0 {
+			p.speed = float64(p.read) / elapsed
+		}
+		p.lastRead = p.read
+		return
+	}
+	dt := now.Sub(p.lastTick).Seconds()
+	if dt <= 0 {
+		return
+	}
+	instant := float64(p.read-p.lastRead) / dt
+	if p.speed == 0 {
+		p.speed = instant
+	} else {
+		p.speed = ewmaAlpha*instant + (1-ewmaAlpha)*p.speed
+	}
+	p.lastRead = p.read
+}
+
+func (p *progressReader) render() {
+	if !p.tty {
+		p.renderMilestone()
+		return
+	}
+	if p.total > 0 {
+		pct := float64(p.read) / float64(p.total)
+		filled := int(pct * barWidth)
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+		eta := "--"
+		switch {
+		case p.read >= p.total && p.total > 0:
+			eta = "done"
+		case p.speed > 0:
+			remaining := float64(p.total-p.read) / p.speed
+			eta = formatDurationShort(time.Duration(remaining * float64(time.Second)))
+		}
+		fmt.Fprintf(p.out, "\r  \x1b[36m%s\x1b[0m  %3d%%  %s / %s  %s/s  ETA %s    ",
+			bar, int(pct*100+0.5),
+			humanBytes(p.read), humanBytes(p.total),
+			humanBytes(int64(p.speed)), eta)
+	} else {
+		fmt.Fprintf(p.out, "\r  %s  %s/s          ",
+			humanBytes(p.read), humanBytes(int64(p.speed)))
+	}
+}
+
+// renderMilestone prints one line every ~25 % for non-TTY consumers.
+// When total is unknown, emits one line every ~2 MB.
+func (p *progressReader) renderMilestone() {
+	var cross float64
+	if p.total > 0 {
+		cross = float64(p.read) / float64(p.total)
+		if cross < p.nextMilestone && p.read < p.total {
+			return
+		}
+		next := p.nextMilestone + 0.25
+		if next > 1 {
+			next = 1
+		}
+		p.nextMilestone = next
+		fmt.Fprintf(p.out, "  %3d%%  %s / %s  %s/s\n",
+			int(cross*100+0.5), humanBytes(p.read), humanBytes(p.total), humanBytes(int64(p.speed)))
+		return
+	}
+	// Unknown total — every ~2 MB.
+	threshold := p.nextMilestone
+	if float64(p.read) < threshold {
+		return
+	}
+	p.nextMilestone = threshold + (2 << 20)
+	fmt.Fprintf(p.out, "  %s  %s/s\n",
+		humanBytes(p.read), humanBytes(int64(p.speed)))
+}
+
+// finish leaves the final bar state visible and moves to a fresh line so
+// subsequent output starts cleanly. In TTY mode this means a completed bar
+// (100%, full green glyphs) stays on screen as a "done" marker rather than
+// vanishing between "Downloading…" and the next status line.
+func (p *progressReader) finish() {
+	if p.tty {
+		fmt.Fprintln(p.out)
+	}
+}
+
+// formatDurationShort formats a duration compactly: "42s", "3m15s", "1h4m".
+func formatDurationShort(d time.Duration) string {
+	if d < 0 {
+		return "--"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int((d - time.Duration(m)*time.Minute).Seconds())
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	h := int(d.Hours())
+	m := int((d - time.Duration(h)*time.Hour).Minutes())
+	return fmt.Sprintf("%dh%dm", h, m)
+}
+
+// humanBytes formats bytes as e.g. "8.6 MB" / "1.4 KB" / "500 B".
+func humanBytes(n int64) string {
+	const (
+		kb = 1 << 10
+		mb = 1 << 20
+		gb = 1 << 30
+	)
+	switch {
+	case n >= gb:
+		return fmt.Sprintf("%.1f GB", float64(n)/gb)
+	case n >= mb:
+		return fmt.Sprintf("%.1f MB", float64(n)/mb)
+	case n >= kb:
+		return fmt.Sprintf("%.1f KB", float64(n)/kb)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }

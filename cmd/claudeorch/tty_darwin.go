@@ -8,11 +8,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// stdinIsTerminal reports whether os.Stdin is a real interactive terminal.
-// On macOS (and other BSDs) the termios-get ioctl request is TIOCGETA, not
-// Linux's TCGETS. Functionally equivalent: /dev/null and pipes both fail
-// this ioctl while a real PTY succeeds.
-func stdinIsTerminal() bool {
-	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TIOCGETA)
+// fdIsTerminal reports whether the given fd refers to an interactive terminal.
+// macOS (and other BSDs) use the TIOCGETA termios-get ioctl, not Linux's
+// TCGETS. Functionally equivalent: /dev/null and pipes both fail it while
+// a real PTY succeeds.
+func fdIsTerminal(fd uintptr) bool {
+	_, err := unix.IoctlGetTermios(int(fd), unix.TIOCGETA)
 	return err == nil
 }
+
+func stdinIsTerminal() bool  { return fdIsTerminal(os.Stdin.Fd()) }
+func stderrIsTerminal() bool { return fdIsTerminal(os.Stderr.Fd()) }
