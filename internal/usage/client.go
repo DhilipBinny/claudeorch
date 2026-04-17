@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
+
+	clog "github.com/DhilipBinny/claudeorch/internal/log"
 )
 
 const (
@@ -51,6 +54,8 @@ func Fetch(ctx context.Context, accessToken string) (*Usage, error) {
 	tCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
+	slog.Debug("usage: fetching usage", "access_token", clog.Redact(accessToken))
+
 	req, err := http.NewRequestWithContext(tCtx, http.MethodGet, usageEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("usage.Fetch: build request: %w", err)
@@ -69,6 +74,8 @@ func Fetch(ctx context.Context, accessToken string) (*Usage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("usage.Fetch: read body: %w", err)
 	}
+
+	slog.Debug("usage: response", "status", resp.StatusCode)
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrUnauthorized

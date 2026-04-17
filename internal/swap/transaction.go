@@ -17,6 +17,7 @@ package swap
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -33,6 +34,7 @@ import (
 func Run(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) error {
 	pid := os.Getpid()
 	tmpDir := filepath.Join(claudeorchHome, fmt.Sprintf("tmp-swap-%d", pid))
+	slog.Debug("swap: starting", "profile_dir", profileDir, "tmp_dir", tmpDir)
 
 	// Stage 1: Copy profile files to tmp staging dir.
 	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
@@ -52,6 +54,8 @@ func Run(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) er
 		_ = os.RemoveAll(tmpDir)
 		return fmt.Errorf("swap: stage claude.json: %w", err)
 	}
+
+	slog.Debug("swap: stage 1 complete (files staged)")
 
 	// Stage 2: Backup live files.
 	liveCreds := filepath.Join(claudeConfigHome, ".credentials.json")
@@ -76,6 +80,8 @@ func Run(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) er
 		}
 	}
 
+	slog.Debug("swap: stage 2 complete (backups created)")
+
 	// Stage 3: CommitA — move staged credentials into place.
 	if err := os.Rename(dstCredsStage, liveCreds); err != nil {
 		if rollbackErr := rollback(backupCreds, liveCreds, backupClaude, claudeJSONPath); rollbackErr != nil {
@@ -85,6 +91,8 @@ func Run(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) er
 		_ = os.RemoveAll(tmpDir)
 		return fmt.Errorf("swap: commitA credentials: %w", err)
 	}
+
+	slog.Debug("swap: stage 3 complete (credentials committed)")
 
 	// Stage 4: CommitB — move staged .claude.json into place.
 	if err := os.Rename(dstClaudeStage, claudeJSONPath); err != nil {
@@ -96,11 +104,14 @@ func Run(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) er
 		return fmt.Errorf("swap: commitB .claude.json: %w", err)
 	}
 
+	slog.Debug("swap: stage 4 complete (.claude.json committed)")
+
 	// Stage 5: Cleanup backups + staging dir.
 	_ = os.Remove(backupCreds)
 	_ = os.Remove(backupClaude)
 	_ = os.RemoveAll(tmpDir)
 
+	slog.Debug("swap: complete")
 	return nil
 }
 

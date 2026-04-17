@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
+	clog "github.com/DhilipBinny/claudeorch/internal/log"
+	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/spf13/cobra"
 )
 
@@ -86,6 +89,24 @@ Run 'claudeorch --help' or 'claudeorch <command> --help' for details.`,
 		"disable ANSI colors in output (also respects NO_COLOR)")
 	flags.BoolVar(&flagForce, "force", false,
 		"override safety checks (e.g., swap during an active session) — prints a warning")
+
+	cmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		logFile := ""
+		if logPath, err := paths.LogFile(); err == nil {
+			logFile = logPath
+		}
+		_, _, err := clog.Setup(clog.Options{
+			Debug:   Debug(),
+			LogFile: logFile,
+			Stderr:  os.Stderr,
+		})
+		if err != nil {
+			// Non-fatal: log setup failure should never block a command.
+			fmt.Fprintf(os.Stderr, "warning: log setup: %v\n", err)
+		}
+		slog.Debug("claudeorch starting", "cmd", cmd.Name(), "debug", Debug())
+		return nil
+	}
 
 	// Subcommands are registered by other files in this package.
 	registerSubcommands(cmd)

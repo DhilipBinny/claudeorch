@@ -13,8 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
+
+	clog "github.com/DhilipBinny/claudeorch/internal/log"
 )
 
 const (
@@ -55,6 +58,7 @@ func Refresh(ctx context.Context, credsBlob []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: missing refreshToken", ErrSchema)
 	}
 	refreshToken := envelope.ClaudeAiOauth.RefreshToken
+	slog.Debug("oauth: starting token refresh", "refresh_token", clog.Redact(refreshToken))
 
 	// Call token endpoint.
 	body := map[string]string{
@@ -86,11 +90,14 @@ func Refresh(ctx context.Context, credsBlob []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: read response: %v", ErrNetwork, err)
 	}
 
+	slog.Debug("oauth: token endpoint response", "status", resp.StatusCode)
+
 	// Check for invalid_grant before checking status code (some servers send 200 + error).
 	var errResp struct {
 		Error string `json:"error"`
 	}
 	if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error == "invalid_grant" {
+		slog.Debug("oauth: invalid_grant from server")
 		return nil, ErrInvalidGrant
 	}
 
@@ -112,6 +119,8 @@ func Refresh(ctx context.Context, credsBlob []byte) ([]byte, error) {
 	}
 
 	expiresAt := time.Now().UTC().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+
+	slog.Debug("oauth: token refresh success", "access_token", clog.Redact(tokenResp.AccessToken))
 
 	// Merge new fields into the original blob, preserving all unknown fields.
 	return mergeCredentials(credsBlob, tokenResp.AccessToken, tokenResp.RefreshToken, expiresAt)
