@@ -26,11 +26,12 @@ func init() {
 func newListCmd() *cobra.Command {
 	var noUsage bool
 	cmd := &cobra.Command{
-		Use:          "list",
-		Aliases:      []string{"ls"},
-		Short:        "List saved profiles with usage bars.",
-		RunE:         func(cmd *cobra.Command, args []string) error { return runList(cmd, noUsage) },
-		SilenceUsage: true,
+		Use:           "list",
+		Aliases:       []string{"ls"},
+		Short:         "List saved profiles with usage bars.",
+		RunE:          func(cmd *cobra.Command, args []string) error { return runList(cmd, noUsage) },
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 	cmd.Flags().BoolVar(&noUsage, "no-usage", false, "skip fetching usage data (faster)")
 	return cmd

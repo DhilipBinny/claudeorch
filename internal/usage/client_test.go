@@ -10,94 +10,112 @@ import (
 	"time"
 )
 
-func serveJSON(t *testing.T, status int, body any) *httptest.Server {
+// withEndpoint swaps the package-level endpoint for the duration of a test.
+func withEndpoint(t *testing.T, url string) {
 	t.Helper()
-	data, _ := json.Marshal(body)
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write(data)
-	}))
+	orig := usageEndpoint
+	usageEndpoint = url
+	t.Cleanup(func() { usageEndpoint = orig })
 }
 
 func TestFetch_Happy(t *testing.T) {
 	reset := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	srv := serveJSON(t, 200, map[string]any{
-		"data": []map[string]any{
-			{"input_tokens": 500000, "output_tokens": 200000},
-			{"input_tokens": 100000, "output_tokens": 50000},
-		},
-		"limit":    2000000,
-		"reset_at": reset.Format(time.RFC3339),
-	})
+	var gotAuth, gotBeta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotBeta = r.Header.Get("anthropic-beta")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"input_tokens": 500000, "output_tokens": 200000},
+				{"input_tokens": 100000, "output_tokens": 50000},
+			},
+			"limit":    2000000,
+			"reset_at": reset.Format(time.RFC3339),
+		})
+	}))
 	defer srv.Close()
+	withEndpoint(t, srv.URL)
 
-	// Patch endpoint for test.
-	origEndpoint := usageEndpoint
-	// Can't patch const, so we test the Fetch function differently.
-	// Use a thin wrapper approach: build the request manually in test.
-	_ = origEndpoint
-
-	// Test via direct HTTP call instead since endpoint is const.
-	// Real test of the parsing logic:
-	u := &Usage{
-		UsedTokens:  850000,
-		LimitTokens: 2000000,
-		ResetAt:     reset,
+	u, err := Fetch(context.Background(), "test-token")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
 	}
-	pct := u.PercentUsed()
-	if pct < 0.42 || pct > 0.43 {
-		t.Errorf("PercentUsed = %.4f, want ~0.425", pct)
+	if u.UsedTokens != 850000 {
+		t.Errorf("UsedTokens = %d, want 850000", u.UsedTokens)
 	}
-
-	srv.Close() // suppress unused srv warning
+	if u.LimitTokens != 2000000 {
+		t.Errorf("LimitTokens = %d, want 2000000", u.LimitTokens)
+	}
+	if !u.ResetAt.Equal(reset) {
+		t.Errorf("ResetAt = %v, want %v", u.ResetAt, reset)
+	}
+	if gotAuth != "Bearer test-token" {
+		t.Errorf("Authorization header = %q, want Bearer test-token", gotAuth)
+	}
+	if gotBeta != oauthBetaHdr {
+		t.Errorf("anthropic-beta header = %q, want %q", gotBeta, oauthBetaHdr)
+	}
 }
 
-func TestFetch_LiveServer_Unauthorized(t *testing.T) {
+func TestFetch_Unauthorized(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 	}))
 	defer srv.Close()
+	withEndpoint(t, srv.URL)
 
-	// Temporarily replace the HTTP client to point at our test server.
-	_ = srv.URL // used below via a separate fetch call
-
-	// Test the error type detection logic directly.
-	var errTest = ErrUnauthorized
-	if !errors.Is(errTest, ErrUnauthorized) {
-		t.Error("ErrUnauthorized sentinel doesn't match itself")
+	_, err := Fetch(context.Background(), "bad-token")
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized, got: %v", err)
 	}
 }
 
-func TestFetch_5xxError(t *testing.T) {
+func TestFetch_5xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":"internal"}`))
 	}))
 	defer srv.Close()
+	withEndpoint(t, srv.URL)
 
-	// Validate non-2xx logic by calling a private-equivalent.
-	// Since endpoint is const, we verify the status-check logic is correct
-	// by checking what happens with a known bad status.
-	_ = srv.URL
+	_, err := Fetch(context.Background(), "tok")
+	if err == nil {
+		t.Fatal("expected error on 500, got nil")
+	}
+	if errors.Is(err, ErrUnauthorized) {
+		t.Error("500 should not be reported as unauthorized")
+	}
 }
 
-func TestFetch_Timeout(t *testing.T) {
-	// Verify timeout shorter than server delay causes context error.
+func TestFetch_MalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate a slow server — will be cancelled by the 5s timeout.
-		// We don't actually wait here to keep tests fast; we just check the
-		// request is correctly built with a timeout context.
-		time.Sleep(10 * time.Millisecond)
 		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"data":[],"limit":0}`))
+		_, _ = w.Write([]byte(`not json`))
 	}))
 	defer srv.Close()
+	withEndpoint(t, srv.URL)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	_, err := Fetch(context.Background(), "tok")
+	if err == nil {
+		t.Fatal("expected error on malformed JSON, got nil")
+	}
+}
+
+func TestFetch_ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	_ = ctx
+	_, err := Fetch(ctx, "tok")
+	if err == nil {
+		t.Fatal("expected error on cancelled context, got nil")
+	}
 }
 
 func TestPercentUsed(t *testing.T) {

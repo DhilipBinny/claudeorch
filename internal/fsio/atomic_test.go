@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -103,12 +104,13 @@ func TestWriteFileAtomic_CrossDevice(t *testing.T) {
 	t.Cleanup(func() { renameFunc = orig })
 
 	renameFunc = func(_, _ string) error {
-		// Simulate EXDEV via a LinkError with the canonical message.
+		// Simulate EXDEV via the real errno. isCrossDeviceError must recognize
+		// this on both Linux and macOS regardless of the error message text.
 		return &os.LinkError{
 			Op:  "rename",
 			Old: "a",
 			New: "b",
-			Err: errors.New("invalid cross-device link"),
+			Err: syscall.EXDEV,
 		}
 	}
 

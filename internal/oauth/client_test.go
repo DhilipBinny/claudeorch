@@ -4,13 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+// withEndpoint swaps the package-level endpoint for the duration of a test.
+func withEndpoint(t *testing.T, url string) {
+	t.Helper()
+	orig := tokenEndpoint
+	tokenEndpoint = url
+	t.Cleanup(func() { tokenEndpoint = orig })
+}
 
 // fakeCreds builds a minimal credentials blob for testing.
 func fakeCreds(accessToken, refreshToken, customField string) []byte {
@@ -74,34 +81,133 @@ func TestRefresh_MalformedBlob(t *testing.T) {
 	}
 }
 
-func TestRefresh_InvalidGrant_ViaServer(t *testing.T) {
+func TestRefresh_Happy_RotatesTokens_PreservesUnknownFields(t *testing.T) {
+	var gotBeta, gotCT string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBeta = r.Header.Get("anthropic-beta")
+		gotCT = r.Header.Get("Content-Type")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "new_access_xyz",
+			"refresh_token": "new_refresh_abc",
+			"expires_in":    3600,
+		})
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL)
+
+	orig := fakeCreds("old_access", "old_refresh", "custom_payload")
+	result, err := Refresh(context.Background(), orig)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(result, &out); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	oauth := out["claudeAiOauth"].(map[string]any)
+	if oauth["accessToken"] != "new_access_xyz" {
+		t.Errorf("accessToken not rotated: %v", oauth["accessToken"])
+	}
+	if oauth["refreshToken"] != "new_refresh_abc" {
+		t.Errorf("refreshToken not rotated: %v", oauth["refreshToken"])
+	}
+	// Unknown field must survive through refresh.
+	if out["customField"] != "custom_payload" {
+		t.Errorf("customField lost: %v", out["customField"])
+	}
+	// Scopes are inside claudeAiOauth — also must survive.
+	if _, ok := oauth["scopes"]; !ok {
+		t.Error("scopes field dropped through refresh")
+	}
+	// Wire-level checks.
+	if gotBeta != oauthBetaHdr {
+		t.Errorf("anthropic-beta header = %q, want %q", gotBeta, oauthBetaHdr)
+	}
+	if gotCT != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotCT)
+	}
+	if gotBody["grant_type"] != "refresh_token" {
+		t.Errorf("grant_type = %v, want refresh_token", gotBody["grant_type"])
+	}
+	if gotBody["refresh_token"] != "old_refresh" {
+		t.Errorf("refresh_token sent = %v, want old_refresh", gotBody["refresh_token"])
+	}
+	if gotBody["client_id"] != clientID {
+		t.Errorf("client_id = %v, want %s", gotBody["client_id"], clientID)
+	}
+}
+
+func TestRefresh_InvalidGrant(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
 	}))
 	defer srv.Close()
+	withEndpoint(t, srv.URL)
 
-	// We can't patch the const endpoint. Test the detection logic via the
-	// in-package check: if the response body has error=invalid_grant, return ErrInvalidGrant.
-	// Call mergeCredentials path indirectly by testing the logic.
-	var errResp struct {
-		Error string `json:"error"`
-	}
-	body := []byte(`{"error":"invalid_grant"}`)
-	_ = json.Unmarshal(body, &errResp)
-	if errResp.Error != "invalid_grant" {
-		t.Error("invalid_grant detection broken")
-	}
-	// The actual sentinel:
-	if !errors.Is(ErrInvalidGrant, ErrInvalidGrant) {
-		t.Error("ErrInvalidGrant sentinel broken")
+	_, err := Refresh(context.Background(), fakeCreds("a", "b", ""))
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Errorf("expected ErrInvalidGrant, got: %v", err)
 	}
 }
 
-func TestRefresh_5xxError_ReturnsErrNetwork(t *testing.T) {
-	// Verify ErrNetwork sentinel.
-	err := fmt.Errorf("%w: status 500", ErrNetwork)
+func TestRefresh_5xx_ReturnsErrNetwork(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte(`{"error":"internal"}`))
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL)
+
+	_, err := Refresh(context.Background(), fakeCreds("a", "b", ""))
 	if !errors.Is(err, ErrNetwork) {
-		t.Error("ErrNetwork wrapping broken")
+		t.Errorf("expected ErrNetwork, got: %v", err)
+	}
+	if errors.Is(err, ErrInvalidGrant) {
+		t.Error("500 wrongly classified as invalid_grant")
+	}
+}
+
+func TestRefresh_MissingAccessToken_IsSchemaError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"refresh_token": "new_ref",
+			"expires_in":    3600,
+			// access_token missing
+		})
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL)
+
+	_, err := Refresh(context.Background(), fakeCreds("a", "b", ""))
+	if !errors.Is(err, ErrSchema) {
+		t.Errorf("expected ErrSchema when access_token missing, got: %v", err)
+	}
+}
+
+func TestRefresh_EmptyRefreshInResponse_KeepsOld(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "new_access_only",
+			"expires_in":   3600,
+			// refresh_token omitted — server may rotate only access token
+		})
+	}))
+	defer srv.Close()
+	withEndpoint(t, srv.URL)
+
+	orig := fakeCreds("old_access", "old_refresh", "")
+	result, err := Refresh(context.Background(), orig)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if !strings.Contains(string(result), "old_refresh") {
+		t.Errorf("old refresh_token should survive when server omits it: %s", result)
+	}
+	if !strings.Contains(string(result), "new_access_only") {
+		t.Errorf("new access_token missing from result: %s", result)
 	}
 }

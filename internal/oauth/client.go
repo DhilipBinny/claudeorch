@@ -21,11 +21,15 @@ import (
 )
 
 const (
-	tokenEndpoint  = "https://platform.claude.com/v1/oauth/token"
-	clientID       = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	oauthBetaHdr   = "oauth-2025-04-20"
-	requestTimeout = 5 * time.Second
+	defaultTokenEndpoint = "https://platform.claude.com/v1/oauth/token"
+	clientID             = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	oauthBetaHdr         = "oauth-2025-04-20"
+	requestTimeout       = 5 * time.Second
 )
+
+// tokenEndpoint is a var (not const) so tests can point at an httptest.Server.
+// Do NOT change it from production code.
+var tokenEndpoint = defaultTokenEndpoint
 
 // ErrInvalidGrant is returned when the server responds with error=invalid_grant.
 // This means the refresh token is expired or revoked; the user must re-login.

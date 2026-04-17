@@ -20,12 +20,13 @@ func init() {
 
 func newRemoveCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:          "remove <name>",
-		Aliases:      []string{"rm", "delete"},
-		Short:        "Remove a saved profile and its stored credentials.",
-		Args:         cobra.ExactArgs(1),
-		RunE:         runRemove,
-		SilenceUsage: true,
+		Use:           "remove <name>",
+		Aliases:       []string{"rm", "delete"},
+		Short:         "Remove a saved profile and its stored credentials.",
+		Args:          cobra.ExactArgs(1),
+		RunE:          runRemove,
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 }
 

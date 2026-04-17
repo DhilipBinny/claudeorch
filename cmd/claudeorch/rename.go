@@ -20,11 +20,12 @@ func init() {
 
 func newRenameCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:          "rename <old-name> <new-name>",
-		Short:        "Rename a saved profile.",
-		Args:         cobra.ExactArgs(2),
-		RunE:         runRename,
-		SilenceUsage: true,
+		Use:           "rename <old-name> <new-name>",
+		Short:         "Rename a saved profile.",
+		Args:          cobra.ExactArgs(2),
+		RunE:          runRename,
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 }
 

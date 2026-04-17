@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 )
 
 // ErrCrossDevice is returned when WriteFileAtomic cannot complete because the
@@ -127,11 +128,9 @@ func fsyncDir(path string) error {
 }
 
 // isCrossDeviceError reports whether err is a rename-across-filesystems error
-// (EXDEV on Linux/macOS).
+// (EXDEV on Linux/macOS). Uses errno matching rather than string comparison —
+// Linux returns "invalid cross-device link", macOS returns "cross-device link",
+// both stemming from syscall.EXDEV.
 func isCrossDeviceError(err error) bool {
-	var linkErr *os.LinkError
-	if errors.As(err, &linkErr) {
-		return linkErr.Err.Error() == "invalid cross-device link"
-	}
-	return false
+	return errors.Is(err, syscall.EXDEV)
 }

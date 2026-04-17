@@ -102,10 +102,16 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 	}
 
 	// Acquire lock briefly to update LastUsedAt, then release before exec.
+	// LastUsedAt is best-effort metadata — a save failure is warned but not fatal
+	// because the profile's credentials are already materialized and launch must proceed.
 	if release, lockErr := fsio.AcquireLock(context.Background(), lockPath); lockErr == nil {
 		store.Profiles[name].LastUsedAt = timeNow()
-		_ = store.Save(storePath)
+		if saveErr := store.Save(storePath); saveErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not update LastUsedAt in store: %v\n", saveErr)
+		}
 		_ = release()
+	} else {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not acquire lock to update LastUsedAt: %v\n", lockErr)
 	}
 
 	fmt.Fprintf(cmd.ErrOrStderr(), "Launching claude with profile %q (CLAUDE_CONFIG_DIR=%s)\n",

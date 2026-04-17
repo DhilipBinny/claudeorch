@@ -32,6 +32,20 @@ func TestIsAlive_DeadPID(t *testing.T) {
 	}
 }
 
+func TestIsAlive_InvalidPID(t *testing.T) {
+	// pid ≤ 0 must return false without reaching kill(2) — kill(0, 0)
+	// signals the process group and kill(-1, 0) signals every process.
+	if IsAlive(0) {
+		t.Error("IsAlive(0) = true, want false (guarded)")
+	}
+	if IsAlive(-1) {
+		t.Error("IsAlive(-1) = true, want false (guarded)")
+	}
+	if IsAlive(-9999) {
+		t.Error("IsAlive(-9999) = true, want false (guarded)")
+	}
+}
+
 func TestSessions_Empty(t *testing.T) {
 	configDir := t.TempDir()
 	sessions, ides, err := Sessions(configDir)

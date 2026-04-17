@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -42,7 +43,8 @@ Non-destructive by default. Use --fix to repair fixable issues.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctor(cmd, fix)
 		},
-		SilenceUsage: true,
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "repair fixable issues automatically")
 	return cmd
@@ -155,12 +157,18 @@ func checkStore(name, path string) checkResult {
 }
 
 func checkClaudeBinary() checkResult {
-	cmd := exec.Command("claude", "--version")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "claude", "--version")
 	cmd.Env = os.Environ()
-	out, err := runWithTimeout(cmd, 2*time.Second)
+	out, err := cmd.Output()
 	if err != nil {
+		msg := err.Error()
+		if ctx.Err() == context.DeadlineExceeded {
+			msg = "timed out after 2s"
+		}
 		return checkResult{name: "claude binary", ok: false,
-			message: "not found or not responding: " + err.Error()}
+			message: "not found or not responding: " + msg}
 	}
 	version := strings.TrimSpace(string(out))
 	return checkResult{name: "claude binary (" + version + ")", ok: true}
@@ -245,26 +253,6 @@ func checkStaleLock(lockPath string, fix bool) checkResult {
 	// Attempt to read the lock. If we can acquire it immediately, the previous
 	// holder is dead. We just stat-report, not acquire.
 	return checkResult{name: "lock file", ok: true, message: "exists (normal — will be released when holder exits)"}
-}
-
-// runWithTimeout runs cmd and returns output, killing it after d.
-func runWithTimeout(cmd *exec.Cmd, d time.Duration) ([]byte, error) {
-	type result struct {
-		out []byte
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		out, err := cmd.Output()
-		ch <- result{out, err}
-	}()
-	select {
-	case r := <-ch:
-		return r.out, r.err
-	case <-time.After(d):
-		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("timed out after %v", d)
-	}
 }
 
 func unmarshalJSON(data []byte, v any) error {

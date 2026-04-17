@@ -17,10 +17,11 @@ func init() {
 
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:          "status",
-		Short:        "Show the active profile and any running Claude Code sessions.",
-		RunE:         runStatus,
-		SilenceUsage: true,
+		Use:           "status",
+		Short:         "Show the active profile and any running Claude Code sessions.",
+		RunE:          runStatus,
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 }
 

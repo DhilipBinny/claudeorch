@@ -16,10 +16,14 @@ import (
 )
 
 const (
-	usageEndpoint  = "https://api.anthropic.com/api/oauth/usage"
-	requestTimeout = 5 * time.Second
-	oauthBetaHdr   = "oauth-2025-04-20"
+	defaultUsageEndpoint = "https://api.anthropic.com/api/oauth/usage"
+	requestTimeout       = 5 * time.Second
+	oauthBetaHdr         = "oauth-2025-04-20"
 )
+
+// usageEndpoint is a var (not const) so tests can point at an httptest.Server.
+// Do NOT change it from production code.
+var usageEndpoint = defaultUsageEndpoint
 
 // ErrUnauthorized is returned when the API returns 401 — token invalid or expired.
 var ErrUnauthorized = errors.New("usage: unauthorized (token expired or invalid)")
