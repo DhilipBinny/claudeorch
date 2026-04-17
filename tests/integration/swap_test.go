@@ -67,6 +67,32 @@ func TestSwap_NotFound(t *testing.T) {
 	env.Run("swap", "ghost").AssertError(t)
 }
 
+// TestSwap_NotFound_TakesPrecedenceOverSessionCheck pins the regression from
+// local testing: running 'swap <typo>' with live sessions wrongly reported
+// "Claude Code is currently running" instead of "profile not found". The
+// existence check must run BEFORE the session check so a misnamed profile
+// produces a clear, actionable error regardless of session state.
+func TestSwap_NotFound_TakesPrecedenceOverSessionCheck(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok", "ref")
+	env.Run("add", "work").AssertSuccess(t)
+
+	// Seed a live session so the session check would fire.
+	sessDir := filepath.Join(env.ClaudeConfigDir, "sessions")
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"pid":` + itoa(os.Getpid()) + `,"sessionId":"live","cwd":"/tmp"}`)
+	if err := os.WriteFile(filepath.Join(sessDir, "live.json"), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := env.Run("swap", "nonexistent-profile")
+	r.AssertError(t)
+	r.AssertContains(t, "not found")
+}
+
 func TestSwap_ActiveUpdatedInStore(t *testing.T) {
 	env := NewEnv(t)
 	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")

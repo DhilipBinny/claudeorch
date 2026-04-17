@@ -43,6 +43,22 @@ func runSwap(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Verify the profile exists BEFORE checking sessions. Otherwise a typo
+	// like 'swap ghsot' is reported as "Claude Code is currently running"
+	// when the live-session check fires, which is misleading — the user
+	// can't tell if the name is wrong or sessions are in the way.
+	storePath, err := paths.StoreFile()
+	if err != nil {
+		return err
+	}
+	store, err := profile.Load(storePath)
+	if err != nil {
+		return fmt.Errorf("load store: %w", err)
+	}
+	if _, ok := store.Profiles[name]; !ok {
+		return fmt.Errorf("profile %q not found", name)
+	}
+
 	// Check for live sessions before acquiring lock (fast path).
 	claudeConfigHome, err := paths.ClaudeConfigHome()
 	if err != nil {
@@ -77,11 +93,9 @@ func runSwap(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = release() }()
 
-	storePath, err := paths.StoreFile()
-	if err != nil {
-		return err
-	}
-	store, err := profile.Load(storePath)
+	// Re-load store under the lock — the preliminary load was for the fast
+	// fail-on-missing-name path; this one is authoritative for the swap.
+	store, err = profile.Load(storePath)
 	if err != nil {
 		return fmt.Errorf("load store: %w", err)
 	}
