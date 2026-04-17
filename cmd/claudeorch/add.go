@@ -111,6 +111,25 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	// Duplicate check: same (email, orgUUID) already saved.
 	if existingName, found := profile.Resolve(store, identity.EmailAddress, identity.OrganizationUUID); found {
+		// If the user provided an explicit name that disagrees with the matching
+		// profile's name, refuse with a clear message. Silently using existingName
+		// and ignoring the user's arg is a footgun — they typed 'add bala'
+		// expecting bala to be saved, but live ~/.claude/ actually holds dhilip,
+		// so we'd refresh dhilip instead without telling them what happened.
+		if len(args) > 0 && args[0] != existingName {
+			return fmt.Errorf(
+				"live ~/.claude/ holds account %s, which is already saved as %q — "+
+					"not %q\n\n"+
+					"To save a different account as %q, first log in as that account:\n"+
+					"  claude /logout && claude /login\n"+
+					"  claudeorch add %s\n\n"+
+					"To refresh the existing %q profile, run:\n"+
+					"  claudeorch add %s\n"+
+					"  # or: claudeorch refresh %s",
+				identity.EmailAddress, existingName, args[0],
+				args[0], args[0], existingName, existingName, existingName)
+		}
+
 		profileDir, err := paths.ProfileDir(existingName)
 		if err != nil {
 			return err

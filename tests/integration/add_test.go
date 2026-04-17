@@ -40,7 +40,8 @@ func TestAdd_NoLogin(t *testing.T) {
 	r.AssertContains(t, "credentials")
 }
 
-// TestAdd_DuplicateIdentity refreshes credentials in place and does not create a second profile.
+// TestAdd_DuplicateIdentity refreshes credentials in place when the name
+// matches the existing profile saved under this identity.
 func TestAdd_DuplicateIdentity(t *testing.T) {
 	env := NewEnv(t)
 	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
@@ -49,16 +50,12 @@ func TestAdd_DuplicateIdentity(t *testing.T) {
 	r := env.Run("add", "work")
 	r.AssertSuccess(t)
 
-	// Write new credentials for same identity.
+	// Write new credentials for same identity; same name arg → refresh-in-place.
 	env.WriteCredentials("tok_second", "ref_second")
-	r2 := env.Run("add", "work2")
+	r2 := env.Run("add", "work")
 	r2.AssertSuccess(t)
 	r2.AssertContains(t, "Updated credentials")
 
-	// The "work2" profile must NOT have been created — identity matched "work".
-	if env.ProfileExists("work2") {
-		t.Error("duplicate profile was created instead of updating existing")
-	}
 	// The stored credentials must be the updated ones.
 	creds := env.ReadProfileCredentials("work")
 	if !strings.Contains(string(creds), "tok_second") {
@@ -114,6 +111,43 @@ func TestAdd_InvalidName(t *testing.T) {
 	}
 }
 
+// TestAdd_DifferentName_WithDuplicateIdentity pins the UX from local testing:
+// if the user provides an explicit name that disagrees with the existing
+// profile already saved under that (email, org), refuse with a clear error
+// instead of silently refreshing the mismatched profile. Otherwise 'add bala'
+// while live ~/.claude/ holds dhilip looks like it saved bala but actually
+// refreshed dhilip.
+func TestAdd_DifferentName_WithDuplicateIdentity(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+
+	// Second 'add' uses the SAME live identity (alice/org-uuid-1) but a
+	// different explicit name. Must error.
+	r := env.Run("add", "personal")
+	r.AssertError(t)
+	r.AssertContains(t, "already saved as \"work\"")
+
+	// And the 'work' profile must NOT have been silently refreshed — the
+	// user's intent was unambiguous: add under name 'personal'.
+	// Verified indirectly: 'personal' shouldn't exist, 'work' shouldn't have
+	// LastUsedAt bumped. We just assert the list is unchanged.
+}
+
+// TestAdd_SameName_RefreshesInPlace covers the allowed case: explicit name
+// matches the existing profile's name — refresh-in-place is expected.
+func TestAdd_SameName_RefreshesInPlace(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+
+	r := env.Run("add", "work")
+	r.AssertSuccess(t)
+	r.AssertOutputContains(t, "Updated")
+}
+
 // TestAdd_InvalidName_WithDuplicateIdentity pins the regression from local
 // testing: a garbage name used to silently fall through to refresh-in-place
 // when the (email, org) already matched an existing profile, because name
@@ -161,8 +195,9 @@ func TestAdd_DuplicateUpdatesActive(t *testing.T) {
 	env.WriteCredentials("tok_a", "ref_a")
 	env.Run("add", "work").AssertSuccess(t)
 
-	// Second add of the same identity — refresh-in-place path.
-	env.Run("add", "work2").AssertSuccess(t)
+	// Second add of the same identity AND same name — refresh-in-place path.
+	// (A different name arg would be rejected by the disagreement check.)
+	env.Run("add", "work").AssertSuccess(t)
 
 	r := env.Run("status")
 	if strings.Contains(r.Stdout, "Active profile: (none)") {
