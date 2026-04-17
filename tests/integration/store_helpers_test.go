@@ -29,3 +29,26 @@ func setActiveInStore(t *testing.T, env *Env, name string) {
 		t.Fatalf("write store.json: %v", err)
 	}
 }
+
+// clearActiveInStore removes the 'active' pointer from store.json, simulating
+// a state where profiles exist but none is marked active (edge case for
+// status rendering).
+func clearActiveInStore(t *testing.T, env *Env) {
+	t.Helper()
+	data, err := os.ReadFile(env.StoreFile())
+	if err != nil {
+		t.Fatalf("read store.json: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("parse store.json: %v", err)
+	}
+	delete(m, "active")
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal store.json: %v", err)
+	}
+	if err := os.WriteFile(env.StoreFile(), out, 0o600); err != nil {
+		t.Fatalf("write store.json: %v", err)
+	}
+}

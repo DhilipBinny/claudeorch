@@ -131,14 +131,24 @@ func printListJSON(cmd *cobra.Command, rows []ui.ProfileRow) error {
 	return nil
 }
 
+// formatDuration renders a positive duration with the largest two meaningful
+// units: "6d4h", "3h12m", "12m", "42s". Zero-valued higher components are
+// dropped so the output never reads "0h12m" or "0d3h".
 func formatDuration(d time.Duration) string {
 	if d <= 0 {
 		return "now"
 	}
 	days := int(d.Hours()) / 24
 	hours := int(d.Hours()) % 24
-	if days > 0 {
+	minutes := int(d.Minutes()) % 60
+	switch {
+	case days > 0:
 		return fmt.Sprintf("%dd%dh", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%dh%dm", hours, minutes)
+	case minutes > 0:
+		return fmt.Sprintf("%dm", minutes)
+	default:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
-	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }

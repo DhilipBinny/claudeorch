@@ -1,12 +1,19 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
+	"github.com/DhilipBinny/claudeorch/internal/schema"
 	"github.com/DhilipBinny/claudeorch/internal/session"
+	"github.com/DhilipBinny/claudeorch/internal/ui"
+	"github.com/DhilipBinny/claudeorch/internal/usage"
 	"github.com/spf13/cobra"
 )
 
@@ -17,16 +24,31 @@ func init() {
 }
 
 func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:           "status",
-		Short:         "Show the active profile and any running Claude Code sessions.",
-		RunE:          runStatus,
+	var noUsage bool
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show the active profile, its usage, and running Claude Code sessions.",
+		Long: `Prints a "right now" summary for the active profile:
+
+  - Active profile name + email
+  - 5-hour and 7-day usage bars for the active profile (one API call)
+  - Running claude sessions, each tagged with the profile it's using
+  - Footer teaser when other saved profiles exist
+
+For the full table across every saved profile, use 'claudeorch list'.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runStatus(cmd, noUsage)
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	cmd.Flags().BoolVar(&noUsage, "no-usage", false, "skip the usage API call for the active profile")
+	return cmd
 }
 
-func runStatus(cmd *cobra.Command, args []string) error {
+func runStatus(cmd *cobra.Command, noUsage bool) error {
+	ui.Init(NoColor())
+
 	storePath, err := paths.StoreFile()
 	if err != nil {
 		return err
@@ -38,32 +60,45 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	// Active profile.
+	// ── Active profile + its usage ──────────────────────────────────────
 	if store.Active == nil {
 		fmt.Fprintln(out, "Active profile: (none)")
+		if len(store.Profiles) > 0 {
+			fmt.Fprintf(out, "  %d saved profile%s. Run 'claudeorch list' to see them.\n",
+				len(store.Profiles), pluralS(len(store.Profiles)))
+		}
 	} else {
-		p := store.Profiles[*store.Active]
-		fmt.Fprintf(out, "Active profile: %s (%s)\n", *store.Active, p.Email)
+		active := *store.Active
+		p := store.Profiles[active]
+		fmt.Fprintf(out, "Active profile: %s (%s)\n", active, p.Email)
+		if !noUsage {
+			if u, err := fetchActiveUsage(active); err == nil {
+				renderUsageLines(out, u)
+			} else {
+				fmt.Fprintf(out, "  usage: (unavailable: %v)\n", firstLine(err.Error()))
+			}
+		}
 	}
 
-	// Running sessions.
+	fmt.Fprintln(out)
+
+	// ── Running sessions ────────────────────────────────────────────────
 	claudeConfigHome, err := paths.ClaudeConfigHome()
 	if err != nil {
 		return err
 	}
-	sessions, ides, err := session.Sessions(claudeConfigHome)
-	if err != nil {
-		fmt.Fprintf(out, "Sessions: (error reading: %v)\n", err)
+	sessions, ides, sessErr := session.Sessions(claudeConfigHome)
+	if sessErr != nil {
+		fmt.Fprintf(out, "Sessions: (error reading: %v)\n", sessErr)
 		return nil
 	}
-
 	total := len(sessions) + len(ides)
 	if total == 0 {
 		fmt.Fprintln(out, "Sessions: (none)")
 	} else {
 		fmt.Fprintf(out, "Sessions: %d running\n", total)
 		for _, s := range sessions {
-			fmt.Fprintf(out, "  terminal  pid=%d  profile=%s  cwd=%s\n",
+			fmt.Fprintf(out, "  terminal     pid=%d  profile=%s  cwd=%s\n",
 				s.PID, profileLabelForPID(store, s.PID), s.CWD)
 		}
 		for _, ide := range ides {
@@ -71,7 +106,77 @@ func runStatus(cmd *cobra.Command, args []string) error {
 				ide.IDEName, ide.PID, profileLabelForPID(store, ide.PID))
 		}
 	}
+
+	// ── Footer: tease 'list' when other profiles exist ─────────────────
+	if store.Active != nil {
+		others := len(store.Profiles) - 1
+		if others > 0 {
+			fmt.Fprintf(out, "\n%d other profile%s. Run 'claudeorch list' for all usage.\n",
+				others, pluralS(others))
+		}
+	}
+
 	return nil
+}
+
+// fetchActiveUsage loads the active profile's credentials and calls the
+// Anthropic usage API once. Returns an error that the caller surfaces as
+// "(unavailable: ...)" rather than failing the whole command.
+func fetchActiveUsage(name string) (*usage.Usage, error) {
+	profileDir, err := paths.ProfileDir(name)
+	if err != nil {
+		return nil, err
+	}
+	credsData, err := os.ReadFile(filepath.Join(profileDir, "credentials.json"))
+	if err != nil {
+		return nil, err
+	}
+	creds, err := schema.ParseCredentials(credsData)
+	if err != nil {
+		return nil, err
+	}
+	return usage.Fetch(context.Background(), creds.AccessToken)
+}
+
+// renderUsageLines writes two indented bar lines for the active profile's
+// 5-hour and 7-day usage windows.
+func renderUsageLines(w io.Writer, u *usage.Usage) {
+	fmt.Fprintf(w, "  5H  %s  %3d%%  resets %s\n",
+		ui.Bar(u.FiveHour.Percent),
+		int(u.FiveHour.Percent*100+0.5),
+		resetLabel(u.FiveHour.ResetsAt))
+	fmt.Fprintf(w, "  7D  %s  %3d%%  resets %s\n",
+		ui.Bar(u.SevenDay.Percent),
+		int(u.SevenDay.Percent*100+0.5),
+		resetLabel(u.SevenDay.ResetsAt))
+}
+
+// resetLabel formats an absolute reset time as a short "in X" string, or
+// "-" when the server didn't provide one. Uses the days-aware formatter
+// shared with 'list' so 148h becomes "6d4h" instead of "148h12m".
+func resetLabel(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return formatDuration(time.Until(t))
+}
+
+// firstLine collapses a multi-line error to its first line so the "usage:
+// (unavailable: ...)" hint doesn't wrap the terminal with an HTTP body dump.
+func firstLine(s string) string {
+	for i, c := range s {
+		if c == '\n' {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // profileLabelForPID determines which saved profile a running claude session
