@@ -10,11 +10,9 @@ import (
 )
 
 func main() {
-	args := os.Args[1:]
-	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v") {
-		fmt.Printf("claudeorch %s (commit: %s, built: %s)\n", Version, Commit, BuildDate)
-		return
+	root := newRootCmd()
+	if err := root.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
 	}
-	fmt.Fprintln(os.Stderr, "claudeorch: command framework not yet wired (see commit 2)")
-	os.Exit(1)
 }
