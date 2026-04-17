@@ -53,20 +53,22 @@ resolve_version() {
         echo "$CLAUDEORCH_VERSION"
         return
     fi
-    # Latest release tag — works without auth.
+    # Most recent release tag — uses /releases (not /releases/latest) so
+    # pre-releases are included. This matters while claudeorch is still
+    # on -rc builds: /releases/latest returns 404 when only pre-releases
+    # exist.
+    API_URL="https://api.github.com/repos/$REPO/releases"
     if have curl; then
-        curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-            | grep -E '"tag_name"' \
-            | head -1 \
-            | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/'
+        BODY=$(curl -fsSL "$API_URL")
     elif have wget; then
-        wget -qO- "https://api.github.com/repos/$REPO/releases/latest" \
-            | grep -E '"tag_name"' \
-            | head -1 \
-            | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/'
+        BODY=$(wget -qO- "$API_URL")
     else
         fatal "neither curl nor wget found"
     fi
+    echo "$BODY" \
+        | grep -E '"tag_name"' \
+        | head -1 \
+        | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/'
 }
 
 # ---- Install location ------------------------------------------------------
