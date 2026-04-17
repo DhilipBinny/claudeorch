@@ -84,7 +84,9 @@ func TestRefresh_InvalidGrant_ViaServer(t *testing.T) {
 	// We can't patch the const endpoint. Test the detection logic via the
 	// in-package check: if the response body has error=invalid_grant, return ErrInvalidGrant.
 	// Call mergeCredentials path indirectly by testing the logic.
-	var errResp struct{ Error string `json:"error"` }
+	var errResp struct {
+		Error string `json:"error"`
+	}
 	body := []byte(`{"error":"invalid_grant"}`)
 	_ = json.Unmarshal(body, &errResp)
 	if errResp.Error != "invalid_grant" {
