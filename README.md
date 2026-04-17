@@ -50,9 +50,17 @@ Claude Code supports one authenticated account per user at a time. If you have t
 
 ## Install
 
-_Coming with the v0.1.0 release. Stars welcome in the meantime._
+### From source (Go 1.22+)
 
-Planned install paths:
+```bash
+git clone https://github.com/DhilipBinny/claudeorch.git
+cd claudeorch
+go build -o claudeorch ./cmd/claudeorch
+sudo mv claudeorch /usr/local/bin/   # or anywhere on your PATH
+claudeorch --version
+```
+
+### Planned release paths (coming with v0.1.0)
 
 ```bash
 # Go toolchain
