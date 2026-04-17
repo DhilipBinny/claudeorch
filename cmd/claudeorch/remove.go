@@ -67,7 +67,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("profile %q is currently active; use --force to remove it anyway", name)
 	}
 
-	// Zero-overwrite then delete credentials file.
+	// Zero-overwrite then delete the profile dir.
 	profileDir, err := paths.ProfileDir(name)
 	if err != nil {
 		return err
@@ -77,6 +77,23 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 	if err := os.RemoveAll(profileDir); err != nil {
 		return fmt.Errorf("remove profile dir %s: %w", profileDir, err)
+	}
+
+	// Also wipe the isolate dir if it exists — it holds a copy of the
+	// credentials from the most recent 'launch', and leaving it on disk
+	// would leak tokens after the user explicitly asked for removal.
+	if isolateDir, ierr := paths.IsolateDir(name); ierr == nil {
+		if _, statErr := os.Stat(isolateDir); statErr == nil {
+			if err := zeroOverwriteDir(isolateDir); err != nil {
+				// Log but don't fail — the primary removal already succeeded.
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"Warning: zero-overwrite isolate dir %s: %v\n", isolateDir, err)
+			}
+			if err := os.RemoveAll(isolateDir); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"Warning: remove isolate dir %s: %v\n", isolateDir, err)
+			}
+		}
 	}
 
 	// Clear active if it was this profile.

@@ -84,6 +84,23 @@ func runRename(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("rename profile dir: %w", err)
 	}
 
+	// Move the isolate dir too if it exists. Otherwise 'launch <old>' would
+	// leave an orphan at isolate/<old>/ that still holds a credential copy,
+	// and 'launch <new>' would materialize a fresh isolate/<new>/ alongside it.
+	if oldIsolate, ierr := paths.IsolateDir(oldName); ierr == nil {
+		if _, statErr := os.Stat(oldIsolate); statErr == nil {
+			if newIsolate, nerr := paths.IsolateDir(newName); nerr == nil {
+				if err := os.Rename(oldIsolate, newIsolate); err != nil {
+					// Don't fail the whole rename — worst case, user's left with an
+					// orphan isolate dir that 'doctor' could surface later.
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"Warning: could not rename isolate dir %s → %s: %v\n",
+						oldIsolate, newIsolate, err)
+				}
+			}
+		}
+	}
+
 	p := store.Profiles[oldName]
 	p.Name = newName
 	store.Profiles[newName] = p

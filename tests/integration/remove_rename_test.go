@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -27,6 +29,34 @@ func TestRemove_Happy(t *testing.T) {
 func TestRemove_NotFound(t *testing.T) {
 	env := NewEnv(t)
 	env.Run("remove", "ghost").AssertError(t)
+}
+
+// TestRemove_AlsoCleansIsolateDir pins the regression from local testing:
+// 'remove' used to leave ~/.claudeorch/isolate/<name>/.credentials.json on
+// disk after the user explicitly asked for the profile to be removed.
+// A credential copy surviving removal is a security bug.
+func TestRemove_AlsoCleansIsolateDir(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+
+	// Fake-materialize an isolate dir with a credentials file, to simulate
+	// a prior 'launch work' having run.
+	isolateDir := filepath.Join(env.ClaudeorchHome, "isolate", "work")
+	if err := os.MkdirAll(isolateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credsPath := filepath.Join(isolateDir, ".credentials.json")
+	if err := os.WriteFile(credsPath, []byte(`{"claudeAiOauth":{"accessToken":"secret"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env.Run("remove", "work").AssertSuccess(t)
+
+	if _, err := os.Stat(isolateDir); !os.IsNotExist(err) {
+		t.Errorf("isolate dir still exists after remove: %v", err)
+	}
 }
 
 func TestRemove_ActiveRefusesWithoutForce(t *testing.T) {
@@ -75,6 +105,38 @@ func TestRename_Happy(t *testing.T) {
 	}
 	r := env.Run("list", "--no-usage")
 	r.AssertOutputContains(t, "office")
+}
+
+// TestRename_MovesIsolateDir pins the regression from local testing: rename
+// used to leave ~/.claudeorch/isolate/<oldname>/ orphaned on disk, still
+// holding a credential copy. The isolate dir must follow the profile name.
+func TestRename_MovesIsolateDir(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+
+	oldIsolate := filepath.Join(env.ClaudeorchHome, "isolate", "work")
+	newIsolate := filepath.Join(env.ClaudeorchHome, "isolate", "office")
+	if err := os.MkdirAll(oldIsolate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credsPath := filepath.Join(oldIsolate, ".credentials.json")
+	if err := os.WriteFile(credsPath, []byte(`x`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env.Run("rename", "work", "office").AssertSuccess(t)
+
+	if _, err := os.Stat(oldIsolate); !os.IsNotExist(err) {
+		t.Errorf("old isolate dir should be gone, still exists")
+	}
+	if _, err := os.Stat(newIsolate); err != nil {
+		t.Errorf("new isolate dir missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(newIsolate, ".credentials.json")); err != nil {
+		t.Errorf("credentials missing from renamed isolate dir: %v", err)
+	}
 }
 
 func TestRename_TargetExists(t *testing.T) {
