@@ -25,100 +25,226 @@ type ProfileRow struct {
 	SevenDayReset string
 }
 
+// columnGutter is the number of spaces between columns in the rendered table.
+const columnGutter = 2
+
 // RenderTable writes the profile list table to w.
+//
+// Alignment works by computing each column's width from the VISIBLE (ANSI-
+// stripped) length of every cell — header and rows alike — then padding
+// every cell to that width before emitting. The active-profile marker ("* ")
+// and any color escapes are part of the cell content but don't affect the
+// width calculation.
 func RenderTable(w io.Writer, rows []ProfileRow) {
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "No profiles. Run 'claudeorch add' to add one.")
 		return
 	}
 
+	bold := color.New(color.Bold).SprintFunc()
+	cyanBold := color.New(color.FgCyan, color.Bold).SprintFunc()
+	red := color.New(color.FgRed, color.Bold).SprintFunc()
+
+	headers := []string{
+		bold("PROFILE"),
+		bold("EMAIL"),
+		bold("ORG"),
+		bold("5H"),
+		bold("5H RESET"),
+		bold("7D"),
+		bold("7D RESET"),
+		bold("STATUS"),
+	}
+
 	const (
-		colName  = 14
-		colEmail = 26
-		colOrg   = 14
-		colBar   = 22 // bar (15) + " " + pct% (e.g. " 100%")
-		colReset = 8
+		maxEmail = 30
+		maxOrg   = 20
 	)
 
-	bold := color.New(color.Bold).SprintFunc()
-	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s",
-		colName, bold("PROFILE"),
-		colEmail, bold("EMAIL"),
-		colOrg, bold("ORG"),
-		colBar, bold("5H"),
-		colReset, bold("5H RESET"),
-		colBar, bold("7D"),
-		colReset, bold("7D RESET"),
-		bold("STATUS"),
-	)
-	fmt.Fprintln(w, header)
-	fmt.Fprintln(w, strings.Repeat("─", 140))
+	cells := [][]string{headers}
 
 	for _, r := range rows {
+		namePrefix := "  "
 		name := r.Name
 		if r.Active {
-			name = Colorize([]color.Attribute{color.FgCyan, color.Bold}, "* "+name)
-		} else {
-			name = "  " + name
+			namePrefix = "* "
+			name = cyanBold(r.Name)
 		}
+		cells = append(cells, []string{
+			namePrefix + name,
+			truncate(r.Email, maxEmail),
+			truncate(r.OrgName, maxOrg),
+			renderBarCol(r.FiveHourPct),
+			r.FiveHourReset,
+			renderBarCol(r.SevenDayPct),
+			r.SevenDayReset,
+			statusLabel(r, red),
+		})
+	}
 
-		status := ""
-		if r.NeedsReauth {
-			status = Colorize([]color.Attribute{color.FgRed, color.Bold}, "!reauth")
-		} else if r.Active {
-			status = "active"
+	// Compute the visible-width of each column across header + all rows.
+	numCols := len(headers)
+	widths := make([]int, numCols)
+	for _, row := range cells {
+		for i, cell := range row {
+			if vw := visibleWidth(cell); vw > widths[i] {
+				widths[i] = vw
+			}
 		}
+	}
 
-		fiveBar := renderBarCol(r.FiveHourPct)
-		sevenBar := renderBarCol(r.SevenDayPct)
+	gutter := strings.Repeat(" ", columnGutter)
+	writeRow := func(row []string) {
+		for i, cell := range row {
+			fmt.Fprint(w, cell)
+			pad := widths[i] - visibleWidth(cell)
+			if pad > 0 {
+				fmt.Fprint(w, strings.Repeat(" ", pad))
+			}
+			if i < numCols-1 {
+				fmt.Fprint(w, gutter)
+			}
+		}
+		fmt.Fprintln(w)
+	}
 
-		fmt.Fprintf(w, "%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s\n",
-			colName+extraColorBytes(name, stripANSI(name)), name,
-			colEmail, truncate(r.Email, colEmail),
-			colOrg, truncate(r.OrgName, colOrg),
-			colBar+extraColorBytes(fiveBar, stripANSI(fiveBar)), fiveBar,
-			colReset, truncate(r.FiveHourReset, colReset),
-			colBar+extraColorBytes(sevenBar, stripANSI(sevenBar)), sevenBar,
-			colReset, truncate(r.SevenDayReset, colReset),
-			status,
-		)
+	// Header + separator + rows.
+	writeRow(cells[0])
+	totalWidth := 0
+	for _, wdt := range widths {
+		totalWidth += wdt + columnGutter
+	}
+	totalWidth -= columnGutter
+	fmt.Fprintln(w, strings.Repeat("─", totalWidth))
+	for _, row := range cells[1:] {
+		writeRow(row)
 	}
 }
 
-// renderBarCol returns "<bar> <pct>%" or "unavailable" for the bar column.
+// renderBarCol returns "<bar> <pct>%" or "  —  " for the bar column.
+// A dash placeholder has fixed width matching the 4-char "100%" suffix
+// so columns stay aligned when usage is unavailable.
 func renderBarCol(pct float64) string {
 	if pct < 0 {
-		return "      -     "
+		return "—"
 	}
 	return fmt.Sprintf("%s %3d%%", Bar(pct), int(pct*100+0.5))
 }
 
-// stripANSI removes ANSI color escapes so width math works on the visible text.
-func stripANSI(s string) string {
-	for {
-		i := strings.Index(s, "\x1b[")
-		if i < 0 {
-			return s
+// statusLabel returns the rightmost-column label for a row.
+func statusLabel(r ProfileRow, red func(a ...interface{}) string) string {
+	if r.NeedsReauth {
+		return red("!reauth")
+	}
+	if r.Active {
+		return "active"
+	}
+	return ""
+}
+
+// visibleWidth returns the printed (non-ANSI) character count of s.
+// Counts runes for correctness with Unicode bar glyphs like █/░/…, but skips
+// CSI escape sequences ("\x1b[" ... letter) so colorized cells align with
+// plain ones.
+func visibleWidth(s string) int {
+	count := 0
+	i := 0
+	for i < len(s) {
+		r, size := decodeRune(s[i:])
+		if r == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			// Skip CSI sequence up to and including the terminator letter.
+			j := i + 2
+			for j < len(s) {
+				c := s[j]
+				if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+					j++
+					break
+				}
+				j++
+			}
+			i = j
+			continue
 		}
-		j := strings.IndexByte(s[i:], 'm')
-		if j < 0 {
-			return s
+		count++
+		i += size
+	}
+	return count
+}
+
+// decodeRune is a tiny UTF-8 decoder that doesn't pull in unicode/utf8
+// in this hot path. Returns (rune, byte-size). Invalid bytes count as 1.
+func decodeRune(s string) (rune, int) {
+	if len(s) == 0 {
+		return 0, 0
+	}
+	b := s[0]
+	switch {
+	case b < 0x80:
+		return rune(b), 1
+	case b < 0xC0:
+		// Continuation byte without leader — malformed; treat as 1 byte.
+		return rune(b), 1
+	case b < 0xE0:
+		if len(s) < 2 {
+			return rune(b), 1
 		}
-		s = s[:i] + s[i+j+1:]
+		return rune(b&0x1F)<<6 | rune(s[1]&0x3F), 2
+	case b < 0xF0:
+		if len(s) < 3 {
+			return rune(b), 1
+		}
+		return rune(b&0x0F)<<12 | rune(s[1]&0x3F)<<6 | rune(s[2]&0x3F), 3
+	default:
+		if len(s) < 4 {
+			return rune(b), 1
+		}
+		return rune(b&0x07)<<18 | rune(s[1]&0x3F)<<12 | rune(s[2]&0x3F)<<6 | rune(s[3]&0x3F), 4
 	}
 }
 
-// extraColorBytes returns the number of invisible ANSI bytes in colored, so
-// fmt's width padding (which counts bytes) stays visually correct.
-func extraColorBytes(colored, plain string) int {
-	return len(colored) - len(plain)
+// stripANSI removes ANSI color escapes (exported for tests).
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) {
+				c := s[j]
+				if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+					j++
+					break
+				}
+				j++
+			}
+			i = j
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	if s == "" {
+		return ""
+	}
+	if visibleWidth(s) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	// Truncate by rune count, not byte count, so mid-multibyte doesn't corrupt.
+	out := make([]byte, 0, len(s))
+	w := 0
+	i := 0
+	for i < len(s) && w < max-1 {
+		_, size := decodeRune(s[i:])
+		out = append(out, s[i:i+size]...)
+		i += size
+		w++
+	}
+	return string(out) + "…"
 }
 
 // noColorEnabled returns true when color is globally disabled.
