@@ -107,9 +107,29 @@ func runRefresh(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("refresh failed: %w", err)
 	}
 
-	// Write refreshed credentials atomically.
+	// Write refreshed credentials atomically to the profile copy.
 	if err := fsio.WriteFileAtomic(credsPath, newCredsData, 0o600); err != nil {
 		return fmt.Errorf("write refreshed credentials: %w", err)
+	}
+
+	// If this is the active profile, sync the live ~/.claude/.credentials.json
+	// too — otherwise the live file still holds the old refreshToken that
+	// Anthropic just revoked on rotation, and Claude Code will stop working on
+	// its next refresh attempt.
+	if store.IsActive(name) {
+		liveCredsPath, lErr := paths.ClaudeCredentialsPath()
+		if lErr == nil {
+			if writeErr := fsio.WriteFileAtomic(liveCredsPath, newCredsData, 0o600); writeErr != nil {
+				// Loud warning: profile copy has new tokens, live has old (revoked) ones.
+				// User can recover by running 'claudeorch swap <name>' which atomically
+				// re-copies the profile credentials into the live location.
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"Warning: could not sync live credentials at %s: %v\n"+
+						"  The profile has the new tokens, but ~/.claude/ still has the old (revoked) ones.\n"+
+						"  Run 'claudeorch swap %s' to resync.\n",
+					liveCredsPath, writeErr, name)
+			}
+		}
 	}
 
 	// Update isolate copy if it exists.
