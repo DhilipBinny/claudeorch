@@ -50,9 +50,9 @@ func RenderTable(w io.Writer, rows []ProfileRow) {
 		bold("EMAIL"),
 		bold("ORG"),
 		bold("5H"),
-		bold("5H RESET"),
+		bold("5H-RESET"),
 		bold("7D"),
-		bold("7D RESET"),
+		bold("7D-RESET"),
 		bold("STATUS"),
 	}
 
