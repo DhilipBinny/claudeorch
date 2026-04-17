@@ -50,28 +50,51 @@ Claude Code supports one authenticated account per user at a time. If you have t
 
 ## Install
 
-### From source (Go 1.22+)
+### Recommended: one-line installer (Linux & macOS, no Go needed)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DhilipBinny/claudeorch/main/install.sh | sh
+```
+
+The script:
+- Detects your OS (Linux/macOS) and CPU (amd64/arm64)
+- Downloads the matching pre-built binary from the latest GitHub Release
+- Verifies its SHA-256 checksum
+- Installs to `~/.local/bin/claudeorch` (or `/usr/local/bin/claudeorch` if run as root)
+
+Verify:
+```bash
+claudeorch --version
+```
+
+If `~/.local/bin` is not on your `$PATH` yet, add:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Pin a specific version with `CLAUDEORCH_VERSION=v0.1.0-rc1`, or change the destination with `CLAUDEORCH_BINDIR=/path/to/dir`.
+
+### Alternative: `go install` (Go 1.22+)
+
+```bash
+go install github.com/DhilipBinny/claudeorch/cmd/claudeorch@latest
+```
+
+Places the binary in `$GOBIN` (defaults to `$HOME/go/bin/`).
+
+### Alternative: build from source
 
 ```bash
 git clone https://github.com/DhilipBinny/claudeorch.git
 cd claudeorch
 go build -o claudeorch ./cmd/claudeorch
-sudo mv claudeorch /usr/local/bin/   # or anywhere on your PATH
-claudeorch --version
+sudo mv claudeorch /usr/local/bin/
 ```
 
-### Planned release paths (coming with v0.1.0)
+### Planned (future releases)
 
-```bash
-# Go toolchain
-go install github.com/DhilipBinny/claudeorch@latest
-
-# Homebrew
-brew install DhilipBinny/claudeorch/claudeorch
-
-# curl
-curl -fsSL https://raw.githubusercontent.com/DhilipBinny/claudeorch/main/install.sh | sh
-```
+- Homebrew: `brew install DhilipBinny/claudeorch/claudeorch`
+- Windows binaries (currently Linux & macOS only)
 
 ## Usage
 

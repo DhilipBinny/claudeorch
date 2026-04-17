@@ -35,3 +35,6 @@ CLAUDE.md
 .claudeorch-dev/
 *.credentials.json
 *.claude.json
+
+# release artifacts (generated, uploaded to GitHub Releases)
+/dist/
