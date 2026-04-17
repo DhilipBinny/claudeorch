@@ -88,11 +88,20 @@ pick_bindir() {
 # ---- Download ---------------------------------------------------------------
 
 download() {
-    URL="$1"; OUT="$2"
+    URL="$1"; OUT="$2"; SHOW_PROGRESS="${3:-no}"
     if have curl; then
-        curl -fsSL "$URL" -o "$OUT"
+        if [ "$SHOW_PROGRESS" = "yes" ]; then
+            # -S shows errors, --progress-bar shows a simple one-line bar.
+            curl -fSL --progress-bar "$URL" -o "$OUT"
+        else
+            curl -fsSL "$URL" -o "$OUT"
+        fi
     else
-        wget -qO "$OUT" "$URL"
+        if [ "$SHOW_PROGRESS" = "yes" ]; then
+            wget --show-progress -qO "$OUT" "$URL"
+        else
+            wget -qO "$OUT" "$URL"
+        fi
     fi
 }
 
@@ -133,8 +142,9 @@ TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 info "downloading $ASSET..."
-download "$BIN_URL"  "$TMPDIR/$ASSET"  || fatal "download failed: $BIN_URL"
-download "$SUMS_URL" "$TMPDIR/SHA256SUMS" || fatal "download failed: $SUMS_URL"
+download "$BIN_URL"  "$TMPDIR/$ASSET"  yes  || fatal "download failed: $BIN_URL"
+# SHA256SUMS is tiny (few hundred bytes) — no progress bar.
+download "$SUMS_URL" "$TMPDIR/SHA256SUMS"   || fatal "download failed: $SUMS_URL"
 
 EXPECTED=$(grep " $ASSET$" "$TMPDIR/SHA256SUMS" | awk '{print $1}')
 [ -n "$EXPECTED" ] || fatal "no checksum for $ASSET in SHA256SUMS"
