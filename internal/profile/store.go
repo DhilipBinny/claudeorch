@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/DhilipBinny/claudeorch/internal/fsio"
 )
 
 // ErrSchemaMismatch is returned by Load when store.json has an unsupported
@@ -81,12 +83,7 @@ func Load(path string) (*Store, error) {
 	return &s, nil
 }
 
-// Save writes the store to path as JSON.
-//
-// Commit 4 scope: uses os.WriteFile with mode 0600. Commit 5 retrofits this
-// to use internal/fsio WriteFileAtomic with proper temp+fsync+rename+parent-fsync.
-// This non-atomic implementation is acceptable for the foundation layer
-// because store.json is metadata (doctor can rebuild from profiles/ dir).
+// Save writes the store to path as JSON atomically (temp+fsync+rename).
 func (s *Store) Save(path string) error {
 	if s == nil {
 		return errors.New("profile.Store.Save: nil receiver")
@@ -116,13 +113,12 @@ func (s *Store) Save(path string) error {
 	data = append(data, '\n')
 
 	// Ensure parent dir exists (0700).
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("profile.Store.Save: mkdir parent: %w", err)
+	if err := fsio.EnsureDir(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("profile.Store.Save: %w", err)
 	}
 
-	// Non-atomic write (commit 5 upgrades this).
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("profile.Store.Save: write %s: %w", path, err)
+	if err := fsio.WriteFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("profile.Store.Save: %w", err)
 	}
 	return nil
 }
