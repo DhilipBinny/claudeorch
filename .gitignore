@@ -1,0 +1,37 @@
+# Build artifacts
+/claudeorch
+/claudeorch.exe
+/bin/
+/dist/
+
+# Go test & coverage
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Go module download cache (if vendored locally)
+/vendor/
+
+# IDE & editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code project-local collaboration notes (not for public repo)
+CLAUDE.md
+.claude/
+
+# Design doc — kept local for reference; published separately when ready
+/docs/DESIGN.md
+
+# Local dev / test data (never commit credentials or sample profiles)
+.claudeorch-dev/
+*.credentials.json
+*.claude.json
