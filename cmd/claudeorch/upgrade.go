@@ -170,13 +170,9 @@ func findChecksum(sumsBody, assetName string) string {
 // atomically renames it into place. Works on Linux/macOS because POSIX
 // rename-over-open-file keeps the running process's inode intact.
 func replaceRunningBinary(binData []byte) error {
-	exePath, err := os.Executable()
+	exePath, err := resolvedExecutable()
 	if err != nil {
 		return fmt.Errorf("resolve current binary path: %w", err)
-	}
-	// Follow symlinks so the actual binary file is replaced, not the symlink.
-	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
-		exePath = resolved
 	}
 
 	dir := filepath.Dir(exePath)

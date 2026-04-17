@@ -73,12 +73,7 @@ func runUninstall(cmd *cobra.Command, yes, keepBinary, keepState bool) error {
 		return err
 	}
 
-	exePath, exeErr := os.Executable()
-	if exeErr == nil {
-		if resolved, evalErr := filepath.EvalSymlinks(exePath); evalErr == nil {
-			exePath = resolved
-		}
-	}
+	exePath, exeErr := resolvedExecutable()
 
 	// Show the user which account they'll be "stuck" as after uninstall —
 	// ~/.claude/ stays intact, but without claudeorch they can't swap.
@@ -113,11 +108,18 @@ func runUninstall(cmd *cobra.Command, yes, keepBinary, keepState bool) error {
 		}
 	}
 
-	// 1. State removal (same flow as purge).
+	// 1. Statusline cleanup FIRST. If it fails and we're about to remove
+	// the binary, we'd leave Claude Code's settings.json pointing to a
+	// missing executable — its statusline would break on every refresh.
+	// Fail fast in that case so the user can fix perms and retry.
 	if !keepState {
 		if err := removeStatuslineEntry(errOut); err != nil {
+			if !keepBinary {
+				return fmt.Errorf("statusLine cleanup failed — refusing to remove binary and leave Claude pointing at a dead path: %w", err)
+			}
 			fmt.Fprintf(errOut, "Warning: could not clean statusLine entry: %v\n", err)
 		}
+		// 2. State removal (same flow as purge).
 		if _, statErr := os.Stat(orchHome); statErr == nil {
 			if err := zeroOverwriteCredentials(orchHome); err != nil {
 				fmt.Fprintf(errOut, "Warning: zero-overwrite partial: %v\n", err)

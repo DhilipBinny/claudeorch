@@ -104,6 +104,51 @@ func TestUninstall_RemovesStatuslineEntry(t *testing.T) {
 	}
 }
 
+// TestUninstall_StatuslineFailsafe: if we can't touch settings.json (e.g.,
+// unparseable JSON) AND we're about to remove the binary, we should refuse
+// rather than leave Claude pointing to a dead path. With --keep-binary,
+// we proceed with a warning.
+func TestUninstall_StatuslineParseError_FailsFast_WhenRemovingBinary(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+
+	// Plant a malformed settings.json so removeStatuslineEntry errors out.
+	settingsPath := filepath.Join(env.ClaudeConfigDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without --keep-binary: must abort, state must still be intact.
+	r := env.Run("uninstall", "--yes")
+	r.AssertError(t)
+	r.AssertContains(t, "statusLine")
+
+	if _, err := os.Stat(env.ClaudeorchHome); err != nil {
+		t.Errorf("claudeorch home removed despite fail-fast: %v", err)
+	}
+}
+
+func TestUninstall_StatuslineParseError_WarnsOnly_WithKeepBinary(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+	settingsPath := filepath.Join(env.ClaudeConfigDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// With --keep-binary: statusline cleanup failure is a warning, state
+	// cleanup still proceeds (binary remains callable to fix manually).
+	r := env.Run("uninstall", "--yes", "--keep-binary")
+	r.AssertSuccess(t)
+	if _, err := os.Stat(env.ClaudeorchHome); !os.IsNotExist(err) {
+		t.Errorf("claudeorch home should be removed with --keep-binary even when settings.json is unparseable")
+	}
+}
+
 // TestUninstall_KeepsForeignStatusLine verifies we don't clobber a statusLine
 // that wasn't set by claudeorch.
 func TestUninstall_KeepsForeignStatusLine(t *testing.T) {

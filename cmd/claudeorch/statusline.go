@@ -197,12 +197,9 @@ Use --uninstall to remove it.`,
 }
 
 func runStatuslineInstall(cmd *cobra.Command, uninstall bool) error {
-	exe, err := os.Executable()
+	exe, err := resolvedExecutable()
 	if err != nil {
 		return fmt.Errorf("resolve binary path: %w", err)
-	}
-	if resolved, evalErr := filepath.EvalSymlinks(exe); evalErr == nil {
-		exe = resolved
 	}
 
 	claudeHome, err := paths.ClaudeConfigHome()
