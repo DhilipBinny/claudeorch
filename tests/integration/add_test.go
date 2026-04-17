@@ -114,6 +114,24 @@ func TestAdd_InvalidName(t *testing.T) {
 	}
 }
 
+// TestAdd_InvalidName_WithDuplicateIdentity pins the regression from local
+// testing: a garbage name used to silently fall through to refresh-in-place
+// when the (email, org) already matched an existing profile, because name
+// validation happened AFTER the duplicate check. Name validation must come
+// first so the user gets a clear error instead of quiet success.
+func TestAdd_InvalidName_WithDuplicateIdentity(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok_abc", "ref_xyz")
+	env.Run("add", "work").AssertSuccess(t)
+
+	// Identity now matches 'work'. A bad name must STILL be rejected,
+	// not silently treated as a refresh-in-place of 'work'.
+	r := env.Run("add", "../evil")
+	r.AssertError(t)
+	r.AssertContains(t, "invalid")
+}
+
 // TestAdd_StoreVersion verifies store.json always contains "version":1.
 func TestAdd_StoreVersion(t *testing.T) {
 	env := NewEnv(t)

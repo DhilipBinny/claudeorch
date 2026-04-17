@@ -42,6 +42,16 @@ on a non-interactive terminal the email prefix is used as the name.`,
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {
+	// Validate the explicit name up-front, before any disk reads. Otherwise a
+	// garbage name like "../bad" silently passes through because the duplicate
+	// check earlier takes over — refresh-in-place runs, ignoring the name, and
+	// the user never learns their input was wrong.
+	if len(args) > 0 {
+		if err := paths.ValidateProfileName(args[0]); err != nil {
+			return err
+		}
+	}
+
 	// Read live Claude state.
 	claudeJSONPath, err := paths.ClaudeJSONPath()
 	if err != nil {
