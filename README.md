@@ -73,26 +73,82 @@ brew install DhilipBinny/claudeorch/claudeorch
 curl -fsSL https://raw.githubusercontent.com/DhilipBinny/claudeorch/main/install.sh | sh
 ```
 
-## Usage (preview)
+## Usage
+
+### ⚠️ The golden rule
+
+**Run `claudeorch add <name>` BEFORE you `claude /logout` or `/login` for a different account.**
+
+`claude /logout` deletes the local OAuth tokens on disk. If you haven't saved them first via `add`, they are **gone** — you will have to re-authenticate through the browser to get that account back, and any work-in-progress sessions using those tokens may fail.
+
+### First-time setup
 
 ```bash
-# First-time setup
-claude /login                            # log in with account 1
+# You're logged in as account A (say, work). Save it FIRST.
 claudeorch add work
 
-claude /logout && claude /login          # log in with account 2
+# Now it's safe to switch.
+claude /logout
+claude /login                            # log in as account B (home)
+
+# Save account B too.
 claudeorch add home
 
-# Parallel sessions — each terminal, its own account
+# From here on, claudeorch has both. You can switch freely.
+```
+
+### Daily use
+
+```bash
+# See who you've saved, who's active, and how much quota is left
+claudeorch list
+
+# Swap the default account (affects future plain 'claude' invocations)
+claudeorch swap home
+
+# Parallel sessions — each terminal runs a different account simultaneously
 terminal 1 $ claudeorch launch work
 terminal 2 $ claudeorch launch home
 
-# Swap in place when tokens burn
-claudeorch swap home
+# Rotate OAuth tokens (when running close to expiry)
+claudeorch refresh work
 
-# See who's active and how much quota is left
-claudeorch list
+# Health check
+claudeorch doctor
 ```
+
+### Adding a new account later
+
+```bash
+# 1. Your current live account MUST already be saved (otherwise you'll lose it).
+claudeorch list                          # verify current account is listed
+
+# 2. Log in as the new account.
+claude /logout
+claude /login                            # browser OAuth flow as the new account
+
+# 3. Save the new account. Pick a name.
+claudeorch add <newname>
+```
+
+**If `claudeorch add <newname>` errors with "live ~/.claude/ holds account X, which is already saved as Y":** that means the account you just logged in as is already saved under a different name. Either use that existing name, or log in as a truly new account.
+
+### Removing / renaming
+
+```bash
+claudeorch rename old new                # rename a profile
+claudeorch remove work                   # remove a profile (refuses if active without --force)
+claudeorch --force remove work           # remove the active profile (zero-overwrites credentials first)
+```
+
+### Nuclear reset
+
+```bash
+claudeorch purge                         # interactive confirmation
+claudeorch --force purge --yes           # non-interactive — wipes all claudeorch state
+```
+
+`purge` never touches `~/.claude/` — only `~/.claudeorch/`.
 
 Expected output:
 

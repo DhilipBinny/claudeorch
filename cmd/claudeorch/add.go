@@ -29,11 +29,24 @@ func newAddCmd() *cobra.Command {
 		Short: "Add the currently logged-in Claude account as a named profile.",
 		Long: `Reads the active Claude Code credentials and saves them as a profile.
 
-If the same account (email + org) already exists under a different name, the
-stored credentials are refreshed in place — no duplicate profile is created.
+GOLDEN RULE: run 'claudeorch add' BEFORE 'claude /logout' or '/login' for a
+different account. 'claude /logout' deletes the local OAuth tokens. If you
+haven't saved them here first, they're gone and you'll have to re-authenticate
+through the browser to get that account back.
 
-NAME is optional. When omitted on an interactive terminal you will be prompted;
-on a non-interactive terminal the email prefix is used as the name.`,
+Behaviour:
+  - If the live account is not yet saved, creates a new profile with NAME.
+  - If the live account is already saved under the SAME name, refreshes it
+    in place.
+  - If the live account is already saved under a DIFFERENT name, refuses
+    with a clear error (the explicit NAME arg would otherwise be silently
+    ignored).
+
+The newly-saved profile is marked active automatically — it IS the live
+account on disk, so 'status' reflects that without needing a separate 'swap'.
+
+NAME is optional. When omitted on an interactive terminal you'll be prompted;
+on a non-interactive terminal the email prefix is used as the default name.`,
 		Args:          cobra.MaximumNArgs(1),
 		RunE:          runAdd,
 		SilenceUsage:  true,
