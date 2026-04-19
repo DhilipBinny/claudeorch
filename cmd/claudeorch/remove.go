@@ -58,6 +58,12 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load store: %w", err)
 	}
 
+	// Reconcile so Location + Active reflect reality before we decide
+	// whether --force is required.
+	if _, err := reconcileProfiles(store, cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+
 	if _, ok := store.Profiles[name]; !ok {
 		return fmt.Errorf("profile %q not found", name)
 	}

@@ -64,6 +64,13 @@ func runRename(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load store: %w", err)
 	}
 
+	// Reconcile first: if a newer token copy lives in isolate/oldName (from
+	// a prior launch session), promote it to profile/oldName before we
+	// rename so the new profile dir doesn't inherit stale credentials.
+	if _, err := reconcileProfiles(store, cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+
 	if _, ok := store.Profiles[oldName]; !ok {
 		return fmt.Errorf("profile %q not found", oldName)
 	}

@@ -99,10 +99,20 @@ func runDoctor(cmd *cobra.Command, fix bool) error {
 		}
 	}
 
-	// 7. Orphaned .pre-swap files.
+	// 7. Profile drift — TokensLastSeenAt lagging too far behind suggests
+	// Claude Code has silently rotated tokens since we last saw them,
+	// invalidating the profile's refresh token. User should run 'sync' or
+	// re-authenticate.
+	if storeErr == nil {
+		for name, p := range store.Profiles {
+			results = append(results, checkProfileDrift(name, p))
+		}
+	}
+
+	// 8. Orphaned .pre-swap files.
 	results = append(results, checkPreSwapOrphans(claudeConfigHome))
 
-	// 8. Stale lock file.
+	// 9. Stale lock file.
 	results = append(results, checkStaleLock(lockPath, fix))
 
 	// Print results.
@@ -235,6 +245,52 @@ func checkTokenExpiry(name string, p *profile.Profile) checkResult {
 			message: "needs re-authentication — run 'claude /login' then 'claudeorch add " + name + "'"}
 	}
 	return checkResult{name: "token " + name, ok: true}
+}
+
+// driftThreshold is how much older than the current time TokensLastSeenAt
+// is allowed to be before we flag a profile as "likely stale". Access
+// tokens live ~1h and Claude refreshes them aggressively, so any profile
+// that hasn't observed a fresh token in 24h is almost certainly holding a
+// revoked refresh token — whoever silently rotated it (claude, a login,
+// another claudeorch instance) invalidated ours.
+const driftThreshold = 24 * time.Hour
+
+func checkProfileDrift(name string, p *profile.Profile) checkResult {
+	// TokensLastSeenAt is only populated by reconcile. Zero = never
+	// reconciled, which happens on a fresh store or a v1-migrated store
+	// that hasn't had any mutating command run yet. Skip — not actionable.
+	if p.TokensLastSeenAt.IsZero() {
+		return checkResult{name: "drift " + name, ok: true,
+			message: "no observation yet"}
+	}
+	age := time.Since(p.TokensLastSeenAt)
+	if age < driftThreshold {
+		return checkResult{name: "drift " + name, ok: true}
+	}
+	return checkResult{name: "drift " + name, ok: false,
+		message: fmt.Sprintf(
+			"tokens last observed %s ago — likely rotated by another process; "+
+				"run 'claudeorch sync' or 'claude /login' + 'claudeorch add %s'",
+			humanDuration(age), name)}
+}
+
+// humanDuration rounds a duration to the largest meaningful unit for
+// drift messages: "2d", "5h", "45m". Avoids trailing sub-units that
+// aren't useful for a "how stale is this?" readout.
+func humanDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	if days > 0 {
+		return fmt.Sprintf("%dd", days)
+	}
+	hours := int(d.Hours())
+	if hours > 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	mins := int(d.Minutes())
+	if mins > 0 {
+		return fmt.Sprintf("%dm", mins)
+	}
+	return fmt.Sprintf("%ds", int(d.Seconds()))
 }
 
 func checkPreSwapOrphans(claudeConfigHome string) checkResult {
