@@ -109,10 +109,18 @@ func runDoctor(cmd *cobra.Command, fix bool) error {
 		}
 	}
 
-	// 8. Orphaned .pre-swap files.
+	// 8. Isolate-dir orphans — profile marked isolated but dir missing
+	// (launch materialize failed or dir was manually deleted).
+	if storeErr == nil {
+		for name, p := range store.Profiles {
+			results = append(results, checkIsolateOrphan(name, p))
+		}
+	}
+
+	// 9. Orphaned .pre-swap files.
 	results = append(results, checkPreSwapOrphans(claudeConfigHome))
 
-	// 9. Stale lock file.
+	// 10. Stale lock file.
 	results = append(results, checkStaleLock(lockPath, fix))
 
 	// Print results.
@@ -258,10 +266,11 @@ const driftThreshold = 24 * time.Hour
 func checkProfileDrift(name string, p *profile.Profile) checkResult {
 	// TokensLastSeenAt is only populated by reconcile. Zero = never
 	// reconciled, which happens on a fresh store or a v1-migrated store
-	// that hasn't had any mutating command run yet. Skip — not actionable.
+	// that hasn't had any mutating command run yet. Don't flag — the
+	// next mutating command will populate it. Silent ✓ is honest here:
+	// we have no evidence of staleness.
 	if p.TokensLastSeenAt.IsZero() {
-		return checkResult{name: "drift " + name, ok: true,
-			message: "no observation yet"}
+		return checkResult{name: "drift " + name, ok: true}
 	}
 	age := time.Since(p.TokensLastSeenAt)
 	if age < driftThreshold {
@@ -272,6 +281,29 @@ func checkProfileDrift(name string, p *profile.Profile) checkResult {
 			"tokens last observed %s ago — likely rotated by another process; "+
 				"run 'claudeorch sync' or 'claude /login' + 'claudeorch add %s'",
 			humanDuration(age), name)}
+}
+
+// checkIsolateOrphan detects profiles whose Location == "isolated" but
+// whose isolate directory is missing. Happens when launch's materialize
+// step fails after the "isolated" marker has been saved, or when the user
+// manually deletes the isolate dir. Reconcile's orphan check (based on
+// running claude PIDs) won't catch this — it only detects dead-owner cases.
+func checkIsolateOrphan(name string, p *profile.Profile) checkResult {
+	label := "isolate dir " + name
+	if p.Location != profile.LocationIsolated {
+		return checkResult{name: label, ok: true}
+	}
+	isolateDir, err := paths.IsolateDir(name)
+	if err != nil {
+		return checkResult{name: label, ok: false, message: err.Error()}
+	}
+	if _, statErr := os.Stat(isolateDir); os.IsNotExist(statErr) {
+		return checkResult{name: label, ok: false,
+			message: fmt.Sprintf(
+				"marked isolated but %s is missing — run 'claudeorch sync' to reconcile",
+				isolateDir)}
+	}
+	return checkResult{name: label, ok: true}
 }
 
 // humanDuration rounds a duration to the largest meaningful unit for

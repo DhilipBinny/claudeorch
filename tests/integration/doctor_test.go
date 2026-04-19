@@ -85,6 +85,35 @@ func TestDoctor_DriftReported(t *testing.T) {
 	}
 }
 
+// TestDoctor_IsolateDirOrphanDetected pins the Phase 4 audit fix:
+// when a profile is marked isolated but the isolate dir is missing
+// (launch materialize failed, or user deleted it), doctor flags it.
+func TestDoctor_IsolateDirOrphanDetected(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
+	env.WriteCredentials("tok_a", "ref_a")
+	env.Run("add", "work").AssertSuccess(t)
+
+	// Plant Location=isolated in the store without creating the isolate dir.
+	data, _ := os.ReadFile(env.StoreFile())
+	var m map[string]any
+	_ = json.Unmarshal(data, &m)
+	m["profiles"].(map[string]any)["work"].(map[string]any)["location"] = "isolated"
+	out, _ := json.MarshalIndent(m, "", "  ")
+	_ = os.WriteFile(env.StoreFile(), out, 0o600)
+
+	r := env.Run("doctor")
+	if r.ExitCode == 0 {
+		t.Errorf("doctor should fail on isolate-dir orphan; got OK\n%s", r.Stdout)
+	}
+	if !strings.Contains(r.Stdout, "isolate dir work") {
+		t.Errorf("expected 'isolate dir work' entry:\n%s", r.Stdout)
+	}
+	if !strings.Contains(r.Stdout, "claudeorch sync") {
+		t.Errorf("expected sync suggestion in orphan message:\n%s", r.Stdout)
+	}
+}
+
 func TestDoctor_PreSwapOrphanReported(t *testing.T) {
 	env := NewEnv(t)
 
