@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/DhilipBinny/claudeorch/internal/creds"
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
 	"github.com/DhilipBinny/claudeorch/internal/schema"
@@ -195,10 +196,12 @@ func reconcileOne(prof *profile.Profile, store *profile.Store, p Paths,
 	}
 
 	// Only consider live as a candidate if its identity matches THIS profile.
+	// On macOS, live credentials are in the Keychain (not at liveCredsPath),
+	// so we use creds.ReadLive which tries Keychain first, then flat file.
 	if liveIdentity != nil &&
 		liveIdentity.EmailAddress == prof.Email &&
 		liveIdentity.OrganizationUUID == prof.OrganizationUUID {
-		if lc := readCreds(liveCredsPath); lc != nil {
+		if lc := readLiveCreds(liveCredsPath); lc != nil {
 			sources = append(sources, credSource{
 				label: "live", path: liveCredsPath, creds: lc,
 			})
@@ -327,11 +330,27 @@ func sniffLiveIdentity(path string) *schema.Identity {
 	return id
 }
 
-// readCreds reads and parses a credentials.json. Returns nil on any error
-// (missing, unreadable, malformed) — transient failures during concurrent
-// Claude refresh should not blow up reconcile.
+// readCreds reads and parses a credentials.json from a flat file.
+// Returns nil on any error (missing, unreadable, malformed) — transient
+// failures during concurrent Claude refresh should not blow up reconcile.
+// Used for profile/ and isolate/ sources, which are always flat files.
 func readCreds(path string) *schema.Credentials {
 	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	c, err := schema.ParseCredentials(data)
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
+// readLiveCreds reads Claude Code's live credentials using the platform-
+// aware creds package: flat file on Linux, Keychain on macOS. Returns
+// nil on any error (same defensive behaviour as readCreds).
+func readLiveCreds(credsPath string) *schema.Credentials {
+	data, err := creds.ReadLive(credsPath)
 	if err != nil {
 		return nil
 	}

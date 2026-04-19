@@ -175,7 +175,11 @@ func checkStore(name, path string) checkResult {
 }
 
 func checkClaudeBinary() checkResult {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// 5s timeout. Claude Code on macOS is a Node.js binary that takes ~1.8s
+	// to bootstrap (measured on Apple Silicon). The original 2s timeout was
+	// too tight — a small load spike pushed it over. 5s is generous enough
+	// for any reasonable machine while still catching a hung binary.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "claude", "--version")
 	cmd.Env = os.Environ()
@@ -183,7 +187,7 @@ func checkClaudeBinary() checkResult {
 	if err != nil {
 		msg := err.Error()
 		if ctx.Err() == context.DeadlineExceeded {
-			msg = "timed out after 2s"
+			msg = "timed out after 5s"
 		}
 		return checkResult{name: "claude binary", ok: false,
 			message: "not found or not responding: " + msg}
