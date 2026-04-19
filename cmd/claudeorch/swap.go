@@ -103,6 +103,14 @@ func runSwap(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("profile %q not found", name)
 	}
 
+	// Freshen profile snapshots before swap. The outgoing live account may
+	// have been rotated by plain claude usage, and the incoming profile may
+	// have been refreshed via a prior isolate session — reconcile catches
+	// both and prevents us from copying stale tokens into ~/.claude/.
+	if _, err := reconcileProfiles(store, cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+
 	profileDir, err := paths.ProfileDir(name)
 	if err != nil {
 		return err

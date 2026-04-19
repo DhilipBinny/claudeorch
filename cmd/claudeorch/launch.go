@@ -61,6 +61,8 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Preliminary load for fast fail-on-missing-name — avoids acquiring the
+	// lock just to tell the user they mistyped a profile name.
 	store, err := profile.Load(storePath)
 	if err != nil {
 		return fmt.Errorf("load store: %w", err)
@@ -87,12 +89,10 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 		return err
 	}
 
-	// Materialize the isolate directory (idempotent).
-	if _, err := launch.Materialize(profileDir, isolateDir, claudeConfigHome, isolated); err != nil {
-		return fmt.Errorf("materialize isolate: %w", err)
-	}
-
-	// Release lock before exec (lock is not needed post-materialize).
+	// Acquire the global lock. Reconcile + double-launch check + state
+	// transitions all happen under lock. Materialize runs AFTER release
+	// because it's per-profile (isolate/<name>/) and the lock protects
+	// store.json, not per-profile dirs.
 	lockPath, err := paths.LockFile()
 	if err != nil {
 		return err
@@ -100,18 +100,75 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 	if err := fsio.EnsureDir(filepath.Dir(lockPath), 0o700); err != nil {
 		return err
 	}
-
-	// Acquire lock briefly to update LastUsedAt, then release before exec.
-	// LastUsedAt is best-effort metadata — a save failure is warned but not fatal
-	// because the profile's credentials are already materialized and launch must proceed.
-	if release, lockErr := fsio.AcquireLock(context.Background(), lockPath); lockErr == nil {
-		store.Profiles[name].LastUsedAt = timeNow()
-		if saveErr := store.Save(storePath); saveErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not update LastUsedAt in store: %v\n", saveErr)
+	release, err := fsio.AcquireLock(context.Background(), lockPath)
+	if err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+	lockReleased := false
+	defer func() {
+		if !lockReleased {
+			_ = release()
 		}
-		_ = release()
-	} else {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not acquire lock to update LastUsedAt: %v\n", lockErr)
+	}()
+
+	// Reload authoritative store under lock.
+	store, err = profile.Load(storePath)
+	if err != nil {
+		return fmt.Errorf("load store: %w", err)
+	}
+	p, ok := store.Profiles[name]
+	if !ok {
+		return fmt.Errorf("profile %q not found", name)
+	}
+
+	// Freshest-wins: pull any newer tokens (from live if it matches, or
+	// from a prior isolate session) back into profile/<name> before we
+	// materialize. Without this, launch would overwrite fresh tokens in
+	// isolate with stale tokens from profile — the v0.1.0 bug.
+	if _, err := reconcileProfiles(store, cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+
+	// Refuse double-book: profile is already in another location.
+	switch p.Location {
+	case profile.LocationLive:
+		if !flagForce {
+			return fmt.Errorf("profile %q is currently live in ~/.claude/\n"+
+				"  Launching it in an isolate would fork OAuth refresh-token ownership —\n"+
+				"  one side will hit 401 when the other rotates.\n"+
+				"  Options: close any live claude first, swap away, or use --force.", name)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"Warning: launching %q while it's also live in ~/.claude/ — one side will break.\n", name)
+	case profile.LocationIsolated:
+		// Reconcile's orphan cleanup already downgraded any dead isolate.
+		// If still marked isolated, it's owned by a running claude process.
+		if !flagForce {
+			return fmt.Errorf("profile %q is already launched (isolate session running)\n"+
+				"  A second launch of the same profile would fork token ownership.\n"+
+				"  Close the existing session first, or use --force.", name)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"Warning: launching %q when already isolated — one side will break.\n", name)
+	}
+
+	// Mark isolated pre-emptively so concurrent launches see the state
+	// change as soon as we save.
+	p.Location = profile.LocationIsolated
+	p.LastUsedAt = timeNow()
+	if err := store.Save(storePath); err != nil {
+		return fmt.Errorf("save store: %w", err)
+	}
+
+	// Release the lock BEFORE materialize + exec. Materialize writes only
+	// to isolate/<name>/; the "isolated" marker we just saved prevents
+	// other processes from racing on this profile.
+	_ = release()
+	lockReleased = true
+
+	// Materialize the isolate directory (idempotent).
+	if _, err := launch.Materialize(profileDir, isolateDir, claudeConfigHome, isolated); err != nil {
+		return fmt.Errorf("materialize isolate: %w", err)
 	}
 
 	fmt.Fprintf(cmd.ErrOrStderr(), "Launching claude with profile %q (CLAUDE_CONFIG_DIR=%s)\n",

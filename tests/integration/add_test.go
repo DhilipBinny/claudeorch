@@ -224,8 +224,8 @@ func TestAdd_StoreVersion(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatalf("parse store.json: %v", err)
 	}
-	if v, ok := m["version"].(float64); !ok || v != 1 {
-		t.Errorf("store.json version = %v, want 1", m["version"])
+	if v, ok := m["version"].(float64); !ok || v != 2 {
+		t.Errorf("store.json version = %v, want 2", m["version"])
 	}
 }
 
