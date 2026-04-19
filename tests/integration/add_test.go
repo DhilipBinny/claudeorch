@@ -135,6 +135,40 @@ func TestAdd_DifferentName_WithDuplicateIdentity(t *testing.T) {
 	// LastUsedAt bumped. We just assert the list is unchanged.
 }
 
+// TestAdd_ClearsNeedsReauthOnRefreshInPlace pins the fix from a real-world
+// bug: after a failed 'refresh' marked a profile NeedsReauth=true, doing
+// 'claude /login' then 'claudeorch add <same-name>' (the recovery flow
+// the CLI itself suggests) left the flag set. List + doctor kept showing
+// "!reauth" forever even though the account worked. 'add' must clear the
+// flag when it refreshes-in-place because it's doing exactly what the
+// flag says is needed.
+func TestAdd_ClearsNeedsReauthOnRefreshInPlace(t *testing.T) {
+	env := NewEnv(t)
+	env.WriteClaudeJSON("alice@example.com", "org-1", "Acme")
+	env.WriteCredentials("first_a", "first_r")
+	env.Run("add", "work").AssertSuccess(t)
+
+	// Simulate a prior refresh having marked NeedsReauth — edit store.json.
+	data, _ := os.ReadFile(env.StoreFile())
+	var m map[string]any
+	_ = json.Unmarshal(data, &m)
+	m["profiles"].(map[string]any)["work"].(map[string]any)["needs_reauth"] = true
+	out, _ := json.MarshalIndent(m, "", "  ")
+	_ = os.WriteFile(env.StoreFile(), out, 0o600)
+
+	// Now user re-logs-in and re-adds — the fix should clear the flag.
+	env.WriteCredentials("second_a", "second_r")
+	env.Run("add", "work").AssertSuccess(t)
+
+	data, _ = os.ReadFile(env.StoreFile())
+	_ = json.Unmarshal(data, &m)
+	reauth := m["profiles"].(map[string]any)["work"].(map[string]any)["needs_reauth"]
+	// Zero value for a missing/false flag: either key absent or value false.
+	if reauth == true {
+		t.Errorf("needs_reauth still true after refresh-in-place add:\n%s", data)
+	}
+}
+
 // TestAdd_SameName_RefreshesInPlace covers the allowed case: explicit name
 // matches the existing profile's name — refresh-in-place is expected.
 func TestAdd_SameName_RefreshesInPlace(t *testing.T) {

@@ -163,6 +163,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 		now := time.Now().UTC()
 		store.Profiles[existingName].LastUsedAt = now
+		// 'add' just wrote fresh credentials from a successful claude /login.
+		// If a prior failed refresh had set NeedsReauth, this is exactly the
+		// recovery the flag was telling the user to perform — clear it.
+		store.Profiles[existingName].NeedsReauth = false
 		// 'add' always reads from live ~/.claude/, so whatever profile just
 		// absorbed that identity IS the one currently live. Keep the store's
 		// 'active' pointer in sync with reality.
