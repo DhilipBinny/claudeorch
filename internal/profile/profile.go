@@ -201,6 +201,15 @@ func NewStore() *Store {
 //
 // Does NOT move files on disk — the caller is responsible for performing the
 // actual swap before/after calling SetActive.
+//
+// Transition behaviour for the target profile (by its current Location):
+//   - dormant → live: normal path (swap from another profile).
+//   - live → live:    no-op.
+//   - isolated → live: allowed but RARE. Represents a recovery where a
+//     launched session no longer owns the isolate (see reconcile) and the
+//     live credentials now belong to this profile. Callers that detect an
+//     isolated-with-live-owner collision should refuse rather than calling
+//     SetActive — reconcile does this.
 func (s *Store) SetActive(name string) error {
 	if name != "" {
 		if _, ok := s.Profiles[name]; !ok {
@@ -232,10 +241,17 @@ func (s *Store) IsActive(name string) bool {
 
 // MarkIsolated sets the profile's Location to "isolated" without changing
 // any other profile. Used by launch.
+//
+// Idempotent — calling on an already-isolated profile is a no-op and returns
+// nil. Refuses on a currently-live profile (call SetActive("") first, or
+// decide whether the current swap state is stale).
 func (s *Store) MarkIsolated(name string) error {
 	p, ok := s.Profiles[name]
 	if !ok {
 		return fmt.Errorf("unknown profile %q", name)
+	}
+	if p.Location == LocationIsolated {
+		return nil // already isolated, idempotent no-op
 	}
 	if p.Location == LocationLive {
 		return fmt.Errorf("cannot mark %q isolated: currently live", name)

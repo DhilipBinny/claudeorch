@@ -65,6 +65,15 @@ type Report struct {
 	// is detected — normally empty. The `add` command prevents this; a
 	// populated list implies a manual edit of store.json or a bug elsewhere.
 	DuplicateIdentities []string
+	// IsolatedLiveConflicts lists profile names that are currently "isolated"
+	// (a launched claude session owns their isolate dir) AND also match the
+	// live ~/.claude/ identity. This is the dangerous double-holder state
+	// that OAuth refresh-token rotation punishes: both the launched session
+	// and the live process think they have the valid tokens, and whichever
+	// refreshes first invalidates the other. Reconcile surfaces this WITHOUT
+	// auto-resolving — the user has to kill the launched session or choose
+	// which side to keep.
+	IsolatedLiveConflicts []string
 }
 
 // Changed reports whether reconcile made any observable change.
@@ -267,6 +276,21 @@ func reconcileActivePointer(store *profile.Store, liveIdentity *schema.Identity,
 		}
 		store.Active = nil
 		rep.LiveIdentityUnknown = true
+		return nil
+	}
+
+	// Danger zone: the matching profile is currently "isolated" AND a live
+	// claude process still owns the isolate dir (reconcileOne would have
+	// already downgraded it to dormant if orphaned). This means the same
+	// account's refresh token is simultaneously held by:
+	//   - The launched claude session, using isolate/<name>/.credentials.json
+	//   - The live ~/.claude/ session that matches this identity
+	// Whichever process refreshes first invalidates the other. We must NOT
+	// silently promote this to "live" and call it done — instead surface the
+	// conflict for the user to resolve.
+	if store.Profiles[liveProfileName].Location == profile.LocationIsolated {
+		rep.IsolatedLiveConflicts = append(rep.IsolatedLiveConflicts, liveProfileName)
+		// Leave Active + Location as-is; don't make the state worse.
 		return nil
 	}
 

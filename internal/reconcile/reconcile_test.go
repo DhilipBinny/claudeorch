@@ -3,6 +3,7 @@ package reconcile
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -300,6 +301,80 @@ func TestReconcile_DuplicateIdentity_Reported(t *testing.T) {
 	}
 	if len(rep.DuplicateIdentities) == 0 {
 		t.Error("expected duplicate identities reported")
+	}
+}
+
+// MarkIsolated is idempotent: calling it on an already-isolated profile
+// should be a no-op, not an error.
+func TestMarkIsolated_Idempotent(t *testing.T) {
+	s := profile.NewStore()
+	s.Profiles["work"] = sampleProfile("work", "a@x.com")
+
+	if err := s.MarkIsolated("work"); err != nil {
+		t.Fatal(err)
+	}
+	// Second call should succeed silently.
+	if err := s.MarkIsolated("work"); err != nil {
+		t.Errorf("second MarkIsolated errored: %v", err)
+	}
+	if s.Profiles["work"].Location != profile.LocationIsolated {
+		t.Errorf("Location = %q, want isolated", s.Profiles["work"].Location)
+	}
+}
+
+// The dangerous double-holder state: profile is isolated (launched session
+// still owns the isolate dir) AND live ~/.claude/ identity matches the same
+// profile. Reconcile must NOT auto-promote to "live" — that would create
+// the exact OAuth refresh-token-rotation race the whole design prevents.
+func TestReconcile_IsolatedLiveConflict_Surfaced(t *testing.T) {
+	if _, err := os.Stat("/proc/self/exe"); err != nil {
+		t.Skip("requires /proc to simulate a live isolate owner")
+	}
+	p := makeEnv(t)
+	s := profile.NewStore()
+	s.Profiles["work"] = sampleProfile("work", "a@x.com")
+	s.Profiles["work"].Location = profile.LocationIsolated
+
+	// Live matches the same identity — the conflict scenario.
+	writeClaudeJSON(t, p.ClaudeJSONPath, "a@x.com", "org-work")
+	liveCreds := filepath.Join(p.ClaudeConfigHome, ".credentials.json")
+	writeCreds(t, liveCreds, "live_tok", "live_r", 1)
+
+	profileCreds := filepath.Join(p.ProfilesRoot, "work", "credentials.json")
+	writeCreds(t, profileCreds, "profile_tok", "profile_r", 2)
+
+	// Materialize an isolate dir so the orphan check thinks something owns it.
+	// We lie by creating the dir and pointing a background `sleep` at it via
+	// CLAUDE_CONFIG_DIR to simulate a live launched claude session.
+	isolateDir := filepath.Join(p.IsolatesRoot, "work")
+	if err := os.MkdirAll(isolateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCreds(t, filepath.Join(isolateDir, ".credentials.json"), "iso_tok", "iso_r", 1)
+
+	cmd := exec.Command("sleep", "5")
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+isolateDir)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+	time.Sleep(20 * time.Millisecond) // let /proc/<pid>/environ populate
+
+	rep, err := Reconcile(s, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The conflict must be surfaced.
+	if len(rep.IsolatedLiveConflicts) != 1 || rep.IsolatedLiveConflicts[0] != "work" {
+		t.Errorf("IsolatedLiveConflicts = %v, want [work]", rep.IsolatedLiveConflicts)
+	}
+	// Profile must NOT have been silently promoted to live.
+	if s.Profiles["work"].Location != profile.LocationIsolated {
+		t.Errorf("Location = %q, want isolated (no silent upgrade)", s.Profiles["work"].Location)
 	}
 }
 
