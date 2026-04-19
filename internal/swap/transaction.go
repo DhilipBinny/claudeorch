@@ -2,14 +2,15 @@
 //
 //	credentials.json + .claude.json are moved together under a single flock.
 //
-// Swap stages (all file ops under global lock):
-//  1. Stage  — write incoming profile files into tmp-swap-<pid>/
-//  2. Backup — rename current live files to *.pre-swap (backup)
-//  3. CommitA — rename tmp-swap-<pid>/credentials.json → ~/.claude/.credentials.json
-//  4. CommitB — rename tmp-swap-<pid>/claude.json → <claudeJSONPath>
-//  5. Cleanup — remove *.pre-swap backups + empty tmp dir
+// On Linux, both files are on disk and swapped via the classic five-stage
+// rename dance (stage → backup → commitA → commitB → cleanup) with
+// rollback on commitB failure.
 //
-// If CommitB fails, rollback restores from *.pre-swap.
+// On macOS, credentials live in the system Keychain (not on disk), so
+// commitA becomes a Keychain write instead of a file rename. Only
+// .claude.json is still file-renamed (commitB). Rollback restores the
+// Keychain entry from a pre-write backup.
+//
 // Orphaned tmp-swap-<pid>/ or *.pre-swap files left by crashes are cleaned
 // by Recover() which runs in root PreRun.
 package swap
@@ -20,6 +21,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/DhilipBinny/claudeorch/internal/creds"
 )
 
 // Run performs a full swap of the live Claude credentials to the given profile.
@@ -32,9 +35,73 @@ import (
 // claudeConfigHome is the resolved ~/.claude dir
 // claudeJSONPath is the resolved ~/.claude.json (or inside configHome if CLAUDE_CONFIG_DIR set)
 func Run(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) error {
+	if creds.IsKeychainBased() {
+		return runKeychainSwap(profileDir, claudeConfigHome, claudeJSONPath)
+	}
+	return runFileSwap(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath)
+}
+
+// runKeychainSwap handles the macOS path where credentials live in the
+// Keychain and .claude.json is on disk. Only one file rename is needed.
+func runKeychainSwap(profileDir, claudeConfigHome, claudeJSONPath string) error {
+	slog.Debug("swap: starting (keychain mode)", "profile_dir", profileDir)
+
+	// Read the incoming profile's credentials.
+	srcCreds := filepath.Join(profileDir, "credentials.json")
+	newCredsData, err := os.ReadFile(srcCreds)
+	if err != nil {
+		return fmt.Errorf("swap: read profile credentials: %w", err)
+	}
+
+	srcClaude := filepath.Join(profileDir, "claude.json")
+	liveCreds := filepath.Join(claudeConfigHome, ".credentials.json")
+
+	// Backup current Keychain state so we can rollback if .claude.json
+	// rename fails.
+	slog.Debug("swap: backing up current keychain credentials")
+	backupData, _ := creds.ReadLive(liveCreds) // nil if empty/missing — OK
+
+	// CommitA: write new credentials to Keychain.
+	slog.Debug("swap: writing new credentials to keychain")
+	if err := creds.WriteLive(liveCreds, newCredsData); err != nil {
+		return fmt.Errorf("swap: write credentials to keychain: %w", err)
+	}
+
+	// CommitB: rename .claude.json.
+	backupClaude := claudeJSONPath + ".pre-swap"
+	if _, err := os.Stat(claudeJSONPath); err == nil {
+		if err := os.Rename(claudeJSONPath, backupClaude); err != nil {
+			// Rollback Keychain.
+			if backupData != nil {
+				_ = creds.WriteLive(liveCreds, backupData)
+			}
+			return fmt.Errorf("swap: backup .claude.json: %w", err)
+		}
+	}
+	slog.Debug("swap: renaming .claude.json")
+	if err := copyFile(srcClaude, claudeJSONPath, 0o600); err != nil {
+		// Rollback: restore .claude.json backup + Keychain.
+		if _, statErr := os.Stat(backupClaude); statErr == nil {
+			_ = os.Rename(backupClaude, claudeJSONPath)
+		}
+		if backupData != nil {
+			_ = creds.WriteLive(liveCreds, backupData)
+		}
+		return fmt.Errorf("swap: write .claude.json: %w", err)
+	}
+
+	// Cleanup.
+	_ = os.Remove(backupClaude)
+	slog.Debug("swap: complete (keychain mode)")
+	return nil
+}
+
+// runFileSwap handles the Linux path where both credentials and identity
+// are flat files. Uses the classic five-stage rename dance.
+func runFileSwap(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) error {
 	pid := os.Getpid()
 	tmpDir := filepath.Join(claudeorchHome, fmt.Sprintf("tmp-swap-%d", pid))
-	slog.Debug("swap: starting", "profile_dir", profileDir, "tmp_dir", tmpDir)
+	slog.Debug("swap: starting (file mode)", "profile_dir", profileDir, "tmp_dir", tmpDir)
 
 	// Stage 1: Copy profile files to tmp staging dir.
 	if err := os.MkdirAll(tmpDir, 0o700); err != nil {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DhilipBinny/claudeorch/internal/creds"
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
@@ -83,12 +84,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read %s: %w", claudeJSONPath, err)
 	}
 
-	credsData, err := os.ReadFile(credsPath)
+	credsData, err := creds.ReadLive(credsPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("no credentials found at %s — are you logged in to Claude Code?", credsPath)
-		}
-		return fmt.Errorf("read %s: %w", credsPath, err)
+		return err
 	}
 
 	identity, err := schema.ExtractIdentity(claudeJSONData)

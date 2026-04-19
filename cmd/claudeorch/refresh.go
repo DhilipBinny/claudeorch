@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DhilipBinny/claudeorch/internal/creds"
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 	"github.com/DhilipBinny/claudeorch/internal/oauth"
 	"github.com/DhilipBinny/claudeorch/internal/paths"
@@ -127,7 +128,7 @@ func runRefresh(cmd *cobra.Command, args []string) error {
 	if store.IsActive(name) {
 		liveCredsPath, lErr := paths.ClaudeCredentialsPath()
 		if lErr == nil {
-			if writeErr := fsio.WriteFileAtomic(liveCredsPath, newCredsData, 0o600); writeErr != nil {
+			if writeErr := creds.WriteLive(liveCredsPath, newCredsData); writeErr != nil {
 				// Loud warning: profile copy has new tokens, live has old (revoked) ones.
 				// User can recover by running 'claudeorch swap <name>' which atomically
 				// re-copies the profile credentials into the live location.
