@@ -68,6 +68,14 @@ func runRefresh(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load store: %w", err)
 	}
 
+	// Reconcile first — if the profile's tokens are already up to date in
+	// live or isolate, refresh can short-circuit. More importantly, we
+	// mustn't refresh using a stale refresh token when a newer one already
+	// exists elsewhere on disk.
+	if _, err := reconcileProfiles(store, cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+
 	p, ok := store.Profiles[name]
 	if !ok {
 		return fmt.Errorf("profile %q not found", name)

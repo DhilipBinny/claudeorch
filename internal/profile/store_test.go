@@ -27,6 +27,7 @@ func sampleProfile(name, email string) *Profile {
 		OrganizationName: "Org " + name,
 		CreatedAt:        time.Date(2026, 4, 17, 15, 0, 0, 0, time.UTC),
 		Source:           SourceOAuth,
+		Location:         LocationDormant,
 	}
 }
 
@@ -121,7 +122,7 @@ func TestSave_AlwaysIncludesVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "\"version\": 1") {
+	if !strings.Contains(string(data), "\"version\": 2") {
 		t.Errorf("store.json missing version field:\n%s", string(data))
 	}
 }
@@ -163,8 +164,8 @@ func TestLoad_MissingVersion(t *testing.T) {
 	}
 }
 
-// Unsupported version → error, never silent migration.
-func TestLoad_UnsupportedVersion(t *testing.T) {
+// Future-version store → error (don't silently drop unknown fields).
+func TestLoad_FutureVersion(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "store.json")
 
@@ -176,6 +177,192 @@ func TestLoad_UnsupportedVersion(t *testing.T) {
 	_, err := Load(path)
 	if !errors.Is(err, ErrSchemaMismatch) {
 		t.Errorf("Load err = %v, want ErrSchemaMismatch", err)
+	}
+}
+
+// v1 → v2 migration: previously-active profile becomes "live", others "dormant".
+func TestLoad_MigrateV1ToV2(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "store.json")
+
+	// Write a v1-shaped store with top-level "active" pointer and no "location".
+	v1 := `{
+		"version": 1,
+		"active": "work",
+		"profiles": {
+			"work": {
+				"email": "a@x.com", "organization_uuid": "org-1",
+				"organization_name": "Acme",
+				"created_at": "2026-04-17T15:00:00Z",
+				"source": "oauth"
+			},
+			"home": {
+				"email": "b@y.com", "organization_uuid": "org-2",
+				"organization_name": "Home",
+				"created_at": "2026-04-17T15:00:00Z",
+				"source": "oauth"
+			}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load v1: %v", err)
+	}
+	if s.Version != StoreVersion {
+		t.Errorf("Version after migration = %d, want %d", s.Version, StoreVersion)
+	}
+	if s.Active == nil || *s.Active != "work" {
+		t.Errorf("Active = %v, want \"work\"", s.Active)
+	}
+	if s.Profiles["work"].Location != LocationLive {
+		t.Errorf("work.Location = %q, want %q", s.Profiles["work"].Location, LocationLive)
+	}
+	if s.Profiles["home"].Location != LocationDormant {
+		t.Errorf("home.Location = %q, want %q", s.Profiles["home"].Location, LocationDormant)
+	}
+
+	// Save should write v2 and no top-level "active".
+	if err := s.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	out := string(data)
+	if !strings.Contains(out, `"version": 2`) {
+		t.Errorf("saved store not v2:\n%s", out)
+	}
+	if strings.Contains(out, `"active":`) {
+		t.Errorf("saved store should not contain top-level active:\n%s", out)
+	}
+	if !strings.Contains(out, `"location": "live"`) {
+		t.Errorf("saved store missing location field:\n%s", out)
+	}
+}
+
+// v1 with no active pointer: all profiles dormant after migration.
+func TestLoad_MigrateV1ToV2_NoActive(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "store.json")
+
+	v1 := `{
+		"version": 1,
+		"profiles": {
+			"work": {
+				"email": "a@x.com", "organization_uuid": "org-1",
+				"organization_name": "Acme",
+				"created_at": "2026-04-17T15:00:00Z",
+				"source": "oauth"
+			}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.Active != nil {
+		t.Errorf("Active = %v, want nil", s.Active)
+	}
+	if s.Profiles["work"].Location != LocationDormant {
+		t.Errorf("Location = %q, want dormant", s.Profiles["work"].Location)
+	}
+}
+
+// Two profiles marked "live" in a v2 file is corruption — Load must refuse.
+func TestLoad_RefusesMultipleLive(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "store.json")
+
+	bad := `{
+		"version": 2,
+		"profiles": {
+			"work": {
+				"email": "a@x.com", "organization_uuid": "u1", "organization_name": "A",
+				"created_at": "2026-04-17T15:00:00Z", "source": "oauth",
+				"location": "live"
+			},
+			"home": {
+				"email": "b@y.com", "organization_uuid": "u2", "organization_name": "B",
+				"created_at": "2026-04-17T15:00:00Z", "source": "oauth",
+				"location": "live"
+			}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Error("Load accepted two-live store; must refuse")
+	}
+}
+
+// SetActive transitions: previous-live → dormant, new → live.
+func TestSetActive_DowngradesPrevious(t *testing.T) {
+	s := NewStore()
+	s.Profiles["work"] = sampleProfile("work", "a@x.com")
+	s.Profiles["home"] = sampleProfile("home", "b@y.com")
+
+	if err := s.SetActive("work"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Profiles["work"].Location != LocationLive {
+		t.Errorf("work not live")
+	}
+	if s.Profiles["home"].Location != LocationDormant {
+		t.Errorf("home not dormant")
+	}
+
+	if err := s.SetActive("home"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Profiles["home"].Location != LocationLive {
+		t.Errorf("home not live after swap")
+	}
+	if s.Profiles["work"].Location != LocationDormant {
+		t.Errorf("work not dormant after swap (was live)")
+	}
+	if s.Active == nil || *s.Active != "home" {
+		t.Errorf("Active = %v, want home", s.Active)
+	}
+}
+
+// MarkIsolated + MarkDormant transitions.
+func TestMarkIsolated_AndDormant(t *testing.T) {
+	s := NewStore()
+	s.Profiles["work"] = sampleProfile("work", "a@x.com")
+
+	if err := s.MarkIsolated("work"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Profiles["work"].Location != LocationIsolated {
+		t.Errorf("not isolated")
+	}
+
+	if err := s.MarkDormant("work"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Profiles["work"].Location != LocationDormant {
+		t.Errorf("not dormant")
+	}
+}
+
+// Can't mark a currently-live profile as isolated (invariant: one account,
+// one location).
+func TestMarkIsolated_RefusesLive(t *testing.T) {
+	s := NewStore()
+	s.Profiles["work"] = sampleProfile("work", "a@x.com")
+	_ = s.SetActive("work")
+
+	err := s.MarkIsolated("work")
+	if err == nil {
+		t.Error("MarkIsolated on live profile should error")
 	}
 }
 

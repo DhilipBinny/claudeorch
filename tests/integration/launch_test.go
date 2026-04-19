@@ -74,7 +74,10 @@ func TestLaunch_Happy_SetsConfigDir(t *testing.T) {
 	env.WriteCredentials("tok_a", "ref_a")
 	env.Run("add", "work").AssertSuccess(t)
 
-	r := runWithFakeClaude(t, env, "launch", "work")
+	// --force because 'add' marks 'work' live, and launching a live profile
+	// would fork OAuth refresh-token ownership — the safety gate refuses
+	// without --force. This test covers launch mechanics, not the gate.
+	r := runWithFakeClaude(t, env, "--force", "launch", "work")
 	r.AssertSuccess(t)
 
 	// The fake claude script echoes CLAUDE_CONFIG_DIR; it must point at the
@@ -92,7 +95,7 @@ func TestLaunch_PassthroughArgs(t *testing.T) {
 	env.WriteCredentials("tok_a", "ref_a")
 	env.Run("add", "work").AssertSuccess(t)
 
-	r := runWithFakeClaude(t, env, "launch", "work", "--", "--version", "hello")
+	r := runWithFakeClaude(t, env, "--force", "launch", "work", "--", "--version", "hello")
 	r.AssertSuccess(t)
 
 	if !strings.Contains(r.Stdout, "--version hello") {
@@ -111,7 +114,7 @@ func TestLaunch_IsolatedFlag_NoSymlinks(t *testing.T) {
 	}
 	env.Run("add", "work").AssertSuccess(t)
 
-	r := runWithFakeClaude(t, env, "launch", "--isolated", "work")
+	r := runWithFakeClaude(t, env, "--force", "launch", "--isolated", "work")
 	r.AssertSuccess(t)
 
 	// In isolated mode, no CLAUDE.md symlink should be created.
@@ -133,7 +136,10 @@ func TestLaunch_NonIsolated_CreatesSymlinks(t *testing.T) {
 	}
 	env.Run("add", "work").AssertSuccess(t)
 
-	r := runWithFakeClaude(t, env, "launch", "work")
+	// --force because 'add' marks 'work' live, and launching a live profile
+	// would fork OAuth refresh-token ownership — the safety gate refuses
+	// without --force. This test covers launch mechanics, not the gate.
+	r := runWithFakeClaude(t, env, "--force", "launch", "work")
 	r.AssertSuccess(t)
 
 	// Default (non-isolated) mode should symlink CLAUDE.md.

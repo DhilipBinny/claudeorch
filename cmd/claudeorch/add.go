@@ -122,6 +122,14 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load store: %w", err)
 	}
 
+	// Reconcile first — if the live account we're about to snapshot already
+	// matches an existing profile whose saved tokens are older than live,
+	// reconcile will catch that and we won't create a misleading "duplicate"
+	// snapshot with partially-stale data.
+	if _, err := reconcileProfiles(store, cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf("reconcile: %w", err)
+	}
+
 	// Duplicate check: same (email, orgUUID) already saved.
 	if existingName, found := profile.Resolve(store, identity.EmailAddress, identity.OrganizationUUID); found {
 		// If the user provided an explicit name that disagrees with the matching
