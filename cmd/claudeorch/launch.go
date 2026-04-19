@@ -130,13 +130,31 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 	}
 
 	// Refuse double-book: profile is already in another location.
+	// Error messages are deliberately verbose — these are paths users hit
+	// while learning the live-vs-isolate distinction, and terse messages
+	// lead to "what does this mean" confusion.
 	switch p.Location {
 	case profile.LocationLive:
 		if !flagForce {
-			return fmt.Errorf("profile %q is currently live in ~/.claude/\n"+
-				"  Launching it in an isolate would fork OAuth refresh-token ownership —\n"+
-				"  one side will hit 401 when the other rotates.\n"+
-				"  Options: close any live claude first, swap away, or use --force.", name)
+			return fmt.Errorf(
+				"profile %q is your default account right now — its tokens live in ~/.claude/.\n"+
+					"\n"+
+					"Launch would put the same tokens in an isolate dir too. Both copies would fight\n"+
+					"over OAuth refresh-token rotation: whichever side refreshes first invalidates\n"+
+					"the other, and the loser gets 401 on its next API call.\n"+
+					"\n"+
+					"What you probably want:\n"+
+					"\n"+
+					"  • Just use %s now — no claudeorch needed, it's already the default:\n"+
+					"      claude\n"+
+					"\n"+
+					"  • Run %s AND a different account side-by-side (the whole point of launch):\n"+
+					"      claudeorch swap <other-profile>    # other account becomes default\n"+
+					"      claudeorch launch %s                # safe now — %s goes into an isolate\n"+
+					"\n"+
+					"  • Force it anyway (you accept the 401 risk):\n"+
+					"      claudeorch --force launch %s",
+				name, name, name, name, name, name)
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"Warning: launching %q while it's also live in ~/.claude/ — one side will break.\n", name)
@@ -144,9 +162,22 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 		// Reconcile's orphan cleanup already downgraded any dead isolate.
 		// If still marked isolated, it's owned by a running claude process.
 		if !flagForce {
-			return fmt.Errorf("profile %q is already launched (isolate session running)\n"+
-				"  A second launch of the same profile would fork token ownership.\n"+
-				"  Close the existing session first, or use --force.", name)
+			return fmt.Errorf(
+				"profile %q is already running in an isolate session (another terminal).\n"+
+					"\n"+
+					"Starting a second isolate for the same account would fork token ownership —\n"+
+					"the two processes would fight over refresh-token rotation.\n"+
+					"\n"+
+					"Options:\n"+
+					"\n"+
+					"  • Use the existing session (switch to that terminal).\n"+
+					"  • Close it first, then re-launch:\n"+
+					"      # In the other terminal: /exit\n"+
+					"      claudeorch launch %s\n"+
+					"\n"+
+					"  • Force a second one (you accept the 401 risk):\n"+
+					"      claudeorch --force launch %s",
+				name, name, name)
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"Warning: launching %q when already isolated — one side will break.\n", name)
