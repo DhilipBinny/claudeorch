@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DhilipBinny/claudeorch/internal/fsio"
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
 	"github.com/DhilipBinny/claudeorch/internal/schema"
@@ -49,14 +50,38 @@ For the full table across every saved profile, use 'claudeorch list'.`,
 func runStatus(cmd *cobra.Command, noUsage bool) error {
 	ui.Init(NoColor())
 
+	// Reconcile before reading — same rationale as list: if Claude Code
+	// rotated the active profile's tokens in ~/.claude/, status would show
+	// "usage: unavailable" because the profile copy's access token is stale.
+	lockPath, err := paths.LockFile()
+	if err != nil {
+		return err
+	}
+	if err := fsio.EnsureDir(filepath.Dir(lockPath), 0o700); err != nil {
+		return err
+	}
+	release, err := fsio.AcquireLock(context.Background(), lockPath)
+	if err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+
 	storePath, err := paths.StoreFile()
 	if err != nil {
+		_ = release()
 		return err
 	}
 	store, err := profile.Load(storePath)
 	if err != nil {
+		_ = release()
 		return fmt.Errorf("load store: %w", err)
 	}
+
+	rep, reconcileErr := reconcileProfiles(store, cmd.ErrOrStderr())
+	if reconcileErr == nil && rep.Changed() {
+		_ = store.Save(storePath)
+	}
+	_ = release()
+	// Lock released — the rest is read-only.
 
 	out := cmd.OutOrStdout()
 

@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -69,16 +71,22 @@ func TestStatus_NoOtherProfiles_NoTeaser(t *testing.T) {
 	}
 }
 
-// TestStatus_EmptyStore_TeasesList verifies that with no active profile but
-// profiles present (edge case), we still nudge towards list.
+// TestStatus_InactiveWithProfiles_Teases verifies that with no active
+// profile but profiles present, we nudge towards list.
+// v0.3.0+: status runs reconcile, which sniffs live ~/.claude/ identity
+// and auto-corrects the active pointer. To get a genuine "(none)" state,
+// we must also remove the live identity file so reconcile can't find a match.
 func TestStatus_InactiveWithProfiles_Teases(t *testing.T) {
 	env := NewEnv(t)
 	env.WriteClaudeJSON("alice@example.com", "org-uuid-1", "Acme")
 	env.WriteCredentials("tok_a", "ref_a")
 	env.Run("add", "work").AssertSuccess(t)
 
-	// Forcibly clear active by rewriting the store without the active key.
+	// Clear active in store AND remove the live identity file so reconcile
+	// can't auto-correct (simulates a post-logout state).
 	clearActiveInStore(t, env)
+	os.Remove(filepath.Join(env.ClaudeConfigDir, ".claude.json"))
+	os.Remove(filepath.Join(env.ClaudeConfigDir, ".credentials.json"))
 
 	r := env.Run("status", "--no-usage")
 	r.AssertSuccess(t)

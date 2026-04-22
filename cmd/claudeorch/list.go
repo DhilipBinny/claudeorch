@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/DhilipBinny/claudeorch/internal/fsio"
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
 	"github.com/DhilipBinny/claudeorch/internal/schema"
@@ -40,14 +41,40 @@ func newListCmd() *cobra.Command {
 func runList(cmd *cobra.Command, noUsage bool) error {
 	ui.Init(NoColor())
 
+	// Reconcile before reading — list shows usage from the profile's
+	// access token. If Claude Code auto-refreshed tokens in live ~/.claude/,
+	// the profile copy is stale and the usage API call returns 401. A quick
+	// reconcile pulls the fresh tokens into the profile so the usage fetch
+	// works on the first try, without the user having to remember 'sync'.
+	lockPath, err := paths.LockFile()
+	if err != nil {
+		return err
+	}
+	if err := fsio.EnsureDir(filepath.Dir(lockPath), 0o700); err != nil {
+		return err
+	}
+	release, err := fsio.AcquireLock(context.Background(), lockPath)
+	if err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+
 	storePath, err := paths.StoreFile()
 	if err != nil {
+		_ = release()
 		return err
 	}
 	store, err := profile.Load(storePath)
 	if err != nil {
+		_ = release()
 		return fmt.Errorf("load store: %w", err)
 	}
+
+	rep, reconcileErr := reconcileProfiles(store, cmd.ErrOrStderr())
+	if reconcileErr == nil && rep.Changed() {
+		_ = store.Save(storePath)
+	}
+	_ = release()
+	// Lock released — the rest is read-only (usage API calls, rendering).
 
 	names := make([]string, 0, len(store.Profiles))
 	for n := range store.Profiles {
