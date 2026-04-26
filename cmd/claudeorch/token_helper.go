@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,33 +23,37 @@ import (
 //
 // Flow:
 //  1. Read the profile's credentials.json
-//  2. If access token hasn't expired → return it immediately
+//  2. If access token hasn't expired → return it immediately (refreshed=false)
 //  3. If expired → call Anthropic's token endpoint with the refresh token
 //  4. On success: save new tokens to profile (+ live/isolate if owned),
-//     return the fresh access token
+//     return the fresh access token (refreshed=true)
 //  5. On invalid_grant: mark needs_reauth on the profile, return error
 //  6. On network error: return error (caller shows "-")
 //
-// The store is modified in-place when needs_reauth is set. Callers should
-// save the store after all profiles are processed.
-func freshAccessToken(name string, store *profile.Store, storePath string) (string, error) {
+// Returns (accessToken, refreshed, error):
+//   - refreshed=true when an OAuth refresh was performed (caller should save store)
+//   - refreshed=false when the existing token was still valid (no save needed)
+//
+// The store is modified in-place when needs_reauth is set or tokens are
+// refreshed. Callers should save the store when refreshed=true.
+func freshAccessToken(name string, store *profile.Store, storePath string) (string, bool, error) {
 	profileDir, err := paths.ProfileDir(name)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	credsPath := filepath.Join(profileDir, "credentials.json")
 	credsData, err := os.ReadFile(credsPath)
 	if err != nil {
-		return "", fmt.Errorf("read credentials for %q: %w", name, err)
+		return "", false, fmt.Errorf("read credentials for %q: %w", name, err)
 	}
 	parsedCreds, err := schema.ParseCredentials(credsData)
 	if err != nil {
-		return "", fmt.Errorf("parse credentials for %q: %w", name, err)
+		return "", false, fmt.Errorf("parse credentials for %q: %w", name, err)
 	}
 
-	// If the access token is still valid, use it directly.
+	// If the access token is still valid, use it directly — no refresh needed.
 	if !parsedCreds.ExpiresAt.IsZero() && time.Now().Before(parsedCreds.ExpiresAt) {
-		return parsedCreds.AccessToken, nil
+		return parsedCreds.AccessToken, false, nil
 	}
 
 	// Access token expired — try auto-refresh.
@@ -59,7 +64,7 @@ func freshAccessToken(name string, store *profile.Store, storePath string) (stri
 			store.Profiles[name].NeedsReauth = true
 			slog.Debug("token: refresh returned invalid_grant", "profile", name)
 		}
-		return "", fmt.Errorf("auto-refresh %q: %w", name, err)
+		return "", false, fmt.Errorf("auto-refresh %q: %w", name, err)
 	}
 
 	// Save refreshed credentials to profile.
@@ -87,11 +92,11 @@ func freshAccessToken(name string, store *profile.Store, storePath string) (stri
 	if parseErr == nil {
 		store.Profiles[name].TokensLastSeenAt = newParsed.ExpiresAt
 		store.Profiles[name].NeedsReauth = false
-		return newParsed.AccessToken, nil
+		return newParsed.AccessToken, true, nil
 	}
-	return "", fmt.Errorf("parse refreshed credentials for %q: %w", name, parseErr)
+	return "", true, fmt.Errorf("parse refreshed credentials for %q: %w", name, parseErr)
 }
 
 func isInvalidGrant(err error) bool {
-	return err != nil && err.Error() == oauth.ErrInvalidGrant.Error()
+	return errors.Is(err, oauth.ErrInvalidGrant)
 }

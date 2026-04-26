@@ -95,14 +95,14 @@ func runStatus(cmd *cobra.Command, noUsage bool) error {
 		p := store.Profiles[active]
 		fmt.Fprintf(out, "Active profile: %s (%s)\n", active, p.Email)
 		if !noUsage {
-			accessToken, tokenErr := freshAccessToken(active, store, storePath)
+			accessToken, refreshed, tokenErr := freshAccessToken(active, store, storePath)
 			if u, err := fetchUsageWithToken(accessToken, tokenErr); err == nil {
 				renderUsageLines(out, u)
 			} else {
 				fmt.Fprintf(out, "  usage: (unavailable: %v)\n", firstLine(err.Error()))
 			}
-			// Save if auto-refresh happened.
-			if tokenErr == nil {
+			// Save only if an actual OAuth refresh happened.
+			if refreshed {
 				if release2, lockErr := fsio.AcquireLock(context.Background(), lockPath); lockErr == nil {
 					_ = store.Save(storePath)
 					_ = release2()

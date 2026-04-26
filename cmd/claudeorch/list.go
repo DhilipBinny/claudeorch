@@ -102,8 +102,8 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 			// freshAccessToken transparently refreshes if expired — standard
 			// OAuth client behaviour. Dormant profiles whose access tokens
 			// expired hours ago get a fresh one via their stored refresh token.
-			accessToken, tokenErr := freshAccessToken(name, store, storePath)
-			if tokenErr == nil {
+			accessToken, refreshed, tokenErr := freshAccessToken(name, store, storePath)
+			if refreshed {
 				storeModified = true
 			}
 			if u, err := fetchUsageWithToken(accessToken, tokenErr); err == nil && u != nil {
