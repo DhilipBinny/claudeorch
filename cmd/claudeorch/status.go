@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
-	"github.com/DhilipBinny/claudeorch/internal/schema"
 	"github.com/DhilipBinny/claudeorch/internal/session"
 	"github.com/DhilipBinny/claudeorch/internal/ui"
 	"github.com/DhilipBinny/claudeorch/internal/usage"
@@ -97,10 +95,18 @@ func runStatus(cmd *cobra.Command, noUsage bool) error {
 		p := store.Profiles[active]
 		fmt.Fprintf(out, "Active profile: %s (%s)\n", active, p.Email)
 		if !noUsage {
-			if u, err := fetchActiveUsage(active); err == nil {
+			accessToken, tokenErr := freshAccessToken(active, store, storePath)
+			if u, err := fetchUsageWithToken(accessToken, tokenErr); err == nil {
 				renderUsageLines(out, u)
 			} else {
 				fmt.Fprintf(out, "  usage: (unavailable: %v)\n", firstLine(err.Error()))
+			}
+			// Save if auto-refresh happened.
+			if tokenErr == nil {
+				if release2, lockErr := fsio.AcquireLock(context.Background(), lockPath); lockErr == nil {
+					_ = store.Save(storePath)
+					_ = release2()
+				}
 			}
 		}
 	}
@@ -144,24 +150,8 @@ func runStatus(cmd *cobra.Command, noUsage bool) error {
 	return nil
 }
 
-// fetchActiveUsage loads the active profile's credentials and calls the
-// Anthropic usage API once. Returns an error that the caller surfaces as
-// "(unavailable: ...)" rather than failing the whole command.
-func fetchActiveUsage(name string) (*usage.Usage, error) {
-	profileDir, err := paths.ProfileDir(name)
-	if err != nil {
-		return nil, err
-	}
-	credsData, err := os.ReadFile(filepath.Join(profileDir, "credentials.json"))
-	if err != nil {
-		return nil, err
-	}
-	creds, err := schema.ParseCredentials(credsData)
-	if err != nil {
-		return nil, err
-	}
-	return usage.Fetch(context.Background(), creds.AccessToken)
-}
+// fetchUsageWithToken is shared between list.go and status.go — defined
+// in list.go to avoid duplication.
 
 // renderUsageLines writes two indented bar lines for the active profile's
 // 5-hour and 7-day usage windows.

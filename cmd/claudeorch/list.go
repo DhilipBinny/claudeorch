@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
-	"github.com/DhilipBinny/claudeorch/internal/schema"
 	"github.com/DhilipBinny/claudeorch/internal/ui"
 	"github.com/DhilipBinny/claudeorch/internal/usage"
 	"github.com/spf13/cobra"
@@ -82,6 +80,9 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 	}
 	sort.Strings(names)
 
+	// Track whether we auto-refreshed any tokens (need to save store if so).
+	storeModified := false
+
 	rows := make([]ui.ProfileRow, 0, len(names))
 	for _, name := range names {
 		p := store.Profiles[name]
@@ -98,7 +99,14 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 		}
 
 		if !noUsage {
-			if u, err := fetchProfileUsage(name); err == nil && u != nil {
+			// freshAccessToken transparently refreshes if expired — standard
+			// OAuth client behaviour. Dormant profiles whose access tokens
+			// expired hours ago get a fresh one via their stored refresh token.
+			accessToken, tokenErr := freshAccessToken(name, store, storePath)
+			if tokenErr == nil {
+				storeModified = true
+			}
+			if u, err := fetchUsageWithToken(accessToken, tokenErr); err == nil && u != nil {
 				row.FiveHourPct = u.FiveHour.Percent
 				row.SevenDayPct = u.SevenDay.Percent
 				if !u.FiveHour.ResetsAt.IsZero() {
@@ -112,6 +120,19 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 		rows = append(rows, row)
 	}
 
+	// Save store if any auto-refreshes happened.
+	if storeModified {
+		if release2, lockErr := fsio.AcquireLock(context.Background(), lockPath); lockErr == nil {
+			_ = store.Save(storePath)
+			_ = release2()
+		}
+	}
+
+	// Refresh NeedsReauth in rows (may have changed from auto-refresh).
+	for i, name := range names {
+		rows[i].NeedsReauth = store.Profiles[name].NeedsReauth
+	}
+
 	if flagJSON {
 		return printListJSON(cmd, rows)
 	}
@@ -119,20 +140,17 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 	return nil
 }
 
-func fetchProfileUsage(name string) (*usage.Usage, error) {
-	profileDir, err := paths.ProfileDir(name)
-	if err != nil {
-		return nil, err
+// fetchUsageWithToken calls the usage API with the given access token.
+// If tokenErr is non-nil (couldn't obtain a valid token), returns the
+// error without making an API call.
+func fetchUsageWithToken(accessToken string, tokenErr error) (*usage.Usage, error) {
+	if tokenErr != nil {
+		return nil, tokenErr
 	}
-	credsData, err := os.ReadFile(filepath.Join(profileDir, "credentials.json"))
-	if err != nil {
-		return nil, err
+	if accessToken == "" {
+		return nil, fmt.Errorf("no access token")
 	}
-	creds, err := schema.ParseCredentials(credsData)
-	if err != nil {
-		return nil, err
-	}
-	return usage.Fetch(context.Background(), creds.AccessToken)
+	return usage.Fetch(context.Background(), accessToken)
 }
 
 func printListJSON(cmd *cobra.Command, rows []ui.ProfileRow) error {
