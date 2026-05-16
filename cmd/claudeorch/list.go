@@ -99,14 +99,20 @@ func runList(cmd *cobra.Command, noUsage bool) error {
 		}
 
 		if !noUsage {
-			// freshAccessToken transparently refreshes if expired — standard
-			// OAuth client behaviour. Dormant profiles whose access tokens
-			// expired hours ago get a fresh one via their stored refresh token.
-			accessToken, refreshed, tokenErr := freshAccessToken(name, store, storePath)
-			if refreshed {
-				storeModified = true
+			u := usage.LoadCached(name)
+			if u == nil {
+				accessToken, refreshed, tokenErr := freshAccessToken(name, store, storePath)
+				if refreshed {
+					storeModified = true
+				}
+				if fetched, err := fetchUsageWithToken(accessToken, tokenErr); err == nil && fetched != nil {
+					u = fetched
+					_ = usage.SaveCache(name, u)
+				} else {
+					u = usage.LoadStale(name)
+				}
 			}
-			if u, err := fetchUsageWithToken(accessToken, tokenErr); err == nil && u != nil {
+			if u != nil {
 				row.FiveHourPct = u.FiveHour.Percent
 				row.SevenDayPct = u.SevenDay.Percent
 				if !u.FiveHour.ResetsAt.IsZero() {

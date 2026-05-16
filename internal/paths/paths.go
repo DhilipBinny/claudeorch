@@ -220,6 +220,15 @@ func LockFile() (string, error) {
 	return filepath.Join(home, "locks", ".lock"), nil
 }
 
+// CacheDir returns <claudeorch_home>/cache (ephemeral data like usage responses).
+func CacheDir() (string, error) {
+	home, err := ClaudeorchHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "cache"), nil
+}
+
 // LogDir returns <claudeorch_home>/log (parent for rotated log files).
 func LogDir() (string, error) {
 	home, err := ClaudeorchHome()

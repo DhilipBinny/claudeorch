@@ -95,17 +95,24 @@ func runStatus(cmd *cobra.Command, noUsage bool) error {
 		p := store.Profiles[active]
 		fmt.Fprintf(out, "Active profile: %s (%s)\n", active, p.Email)
 		if !noUsage {
-			accessToken, refreshed, tokenErr := freshAccessToken(active, store, storePath)
-			if u, err := fetchUsageWithToken(accessToken, tokenErr); err == nil {
+			u := usage.LoadCached(active)
+			if u != nil {
 				renderUsageLines(out, u)
 			} else {
-				fmt.Fprintf(out, "  usage: (unavailable: %v)\n", firstLine(err.Error()))
-			}
-			// Save only if an actual OAuth refresh happened.
-			if refreshed {
-				if release2, lockErr := fsio.AcquireLock(context.Background(), lockPath); lockErr == nil {
-					_ = store.Save(storePath)
-					_ = release2()
+				accessToken, refreshed, tokenErr := freshAccessToken(active, store, storePath)
+				if fetched, err := fetchUsageWithToken(accessToken, tokenErr); err == nil {
+					_ = usage.SaveCache(active, fetched)
+					renderUsageLines(out, fetched)
+				} else if stale := usage.LoadStale(active); stale != nil {
+					renderUsageLines(out, stale)
+				} else {
+					fmt.Fprintf(out, "  usage: (unavailable: %v)\n", firstLine(err.Error()))
+				}
+				if refreshed {
+					if release2, lockErr := fsio.AcquireLock(context.Background(), lockPath); lockErr == nil {
+						_ = store.Save(storePath)
+						_ = release2()
+					}
 				}
 			}
 		}
