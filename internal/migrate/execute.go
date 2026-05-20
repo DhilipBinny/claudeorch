@@ -50,43 +50,77 @@ type MigrateResult struct {
 	CwdRewrites int
 }
 
-// ResolveSession finds the target session for migration. If sessionID is empty,
-// uses the most recent. Supports prefix matching on session IDs.
-func ResolveSession(sessions []SessionInfo, sessionID string) (*SessionInfo, error) {
+// ResolveSession finds the target session for migration. If query is empty,
+// uses the most recent. Resolution order:
+//  1. Exact session ID match
+//  2. Session ID prefix match
+//  3. Case-insensitive substring match against summary and first prompt
+//
+// Returns an error if zero or multiple sessions match.
+func ResolveSession(sessions []SessionInfo, query string) (*SessionInfo, error) {
 	if len(sessions) == 0 {
 		return nil, fmt.Errorf("migrate: no sessions found")
 	}
 
-	if sessionID == "" {
+	if query == "" {
 		return &sessions[0], nil
 	}
 
+	// 1. Exact session ID match
 	for i := range sessions {
-		if sessions[i].SessionID == sessionID {
+		if sessions[i].SessionID == query {
 			return &sessions[i], nil
 		}
 	}
 
-	var matches []SessionInfo
+	// 2. Session ID prefix match
+	var prefixMatches []SessionInfo
 	for _, s := range sessions {
-		if strings.HasPrefix(s.SessionID, sessionID) {
-			matches = append(matches, s)
+		if strings.HasPrefix(s.SessionID, query) {
+			prefixMatches = append(prefixMatches, s)
+		}
+	}
+	if len(prefixMatches) == 1 {
+		return &prefixMatches[0], nil
+	}
+	if len(prefixMatches) > 1 {
+		return nil, fmtAmbiguousError(query, prefixMatches)
+	}
+
+	// 3. Case-insensitive substring match against summary + firstPrompt
+	lower := strings.ToLower(query)
+	var textMatches []SessionInfo
+	for _, s := range sessions {
+		haystack := strings.ToLower(s.Summary + " " + s.FirstPrompt)
+		if strings.Contains(haystack, lower) {
+			textMatches = append(textMatches, s)
 		}
 	}
 
-	switch len(matches) {
+	switch len(textMatches) {
 	case 0:
-		return nil, fmt.Errorf("migrate: session %q not found", sessionID)
+		return nil, fmt.Errorf("migrate: no session matching %q (checked IDs, prefixes, and summary/prompt text)", query)
 	case 1:
-		return &matches[0], nil
+		return &textMatches[0], nil
 	default:
-		ids := make([]string, len(matches))
-		for i, m := range matches {
-			ids[i] = m.SessionID
-		}
-		return nil, fmt.Errorf("migrate: ambiguous session prefix %q: matches %s",
-			sessionID, strings.Join(ids, ", "))
+		return nil, fmtAmbiguousError(query, textMatches)
 	}
+}
+
+func fmtAmbiguousError(query string, matches []SessionInfo) error {
+	var lines []string
+	for _, m := range matches {
+		label := m.Summary
+		if label == "" {
+			label = m.FirstPrompt
+		}
+		if len(label) > 60 {
+			label = label[:57] + "..."
+		}
+		lines = append(lines, fmt.Sprintf("  %s  %s", m.SessionID, label))
+	}
+	return fmt.Errorf("migrate: %q matches %d sessions — be more specific:\n%s",
+		query, len(matches), strings.Join(lines, "\n"))
 }
 
 // Plan builds the list of actions for a migration without executing them.

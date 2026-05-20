@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -282,12 +283,13 @@ func TestTruncate(t *testing.T) {
 
 func TestResolveSession(t *testing.T) {
 	sessions := []SessionInfo{
-		{SessionID: "abc-111-aaa", Modified: "2026-06-01T00:00:00Z"},
-		{SessionID: "abc-222-bbb", Modified: "2026-05-01T00:00:00Z"},
-		{SessionID: "def-333-ccc", Modified: "2026-04-01T00:00:00Z"},
+		{SessionID: "abc-111-aaa", Summary: "Fix login bug", FirstPrompt: "help me fix the login", Modified: "2026-06-01T00:00:00Z"},
+		{SessionID: "abc-222-bbb", Summary: "Deploy to production", FirstPrompt: "deploy the app", Modified: "2026-05-01T00:00:00Z"},
+		{SessionID: "def-333-ccc", Summary: "", FirstPrompt: "format entire nextjs project", Modified: "2026-04-01T00:00:00Z"},
 	}
 
-	t.Run("empty ID returns most recent", func(t *testing.T) {
+	// --- Tier 0: empty query ---
+	t.Run("empty query returns most recent", func(t *testing.T) {
 		s, err := ResolveSession(sessions, "")
 		if err != nil {
 			t.Fatal(err)
@@ -297,7 +299,15 @@ func TestResolveSession(t *testing.T) {
 		}
 	})
 
-	t.Run("exact match", func(t *testing.T) {
+	t.Run("empty sessions", func(t *testing.T) {
+		_, err := ResolveSession(nil, "")
+		if err == nil {
+			t.Fatal("expected error for empty sessions")
+		}
+	})
+
+	// --- Tier 1: exact session ID match ---
+	t.Run("exact ID match", func(t *testing.T) {
 		s, err := ResolveSession(sessions, "def-333-ccc")
 		if err != nil {
 			t.Fatal(err)
@@ -307,7 +317,8 @@ func TestResolveSession(t *testing.T) {
 		}
 	})
 
-	t.Run("unique prefix", func(t *testing.T) {
+	// --- Tier 2: session ID prefix match ---
+	t.Run("unique prefix match", func(t *testing.T) {
 		s, err := ResolveSession(sessions, "def")
 		if err != nil {
 			t.Fatal(err)
@@ -322,21 +333,117 @@ func TestResolveSession(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for ambiguous prefix")
 		}
+		if !strings.Contains(err.Error(), "matches 2 sessions") {
+			t.Errorf("error = %q, want ambiguity message", err.Error())
+		}
 	})
 
-	t.Run("no match", func(t *testing.T) {
-		_, err := ResolveSession(sessions, "zzz")
+	// --- Tier 3: text match against summary/firstPrompt ---
+	t.Run("text match on summary", func(t *testing.T) {
+		s, err := ResolveSession(sessions, "login bug")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.SessionID != "abc-111-aaa" {
+			t.Errorf("got %q, want abc-111-aaa", s.SessionID)
+		}
+	})
+
+	t.Run("text match on firstPrompt", func(t *testing.T) {
+		s, err := ResolveSession(sessions, "format entire nextjs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.SessionID != "def-333-ccc" {
+			t.Errorf("got %q, want def-333-ccc", s.SessionID)
+		}
+	})
+
+	t.Run("text match case insensitive", func(t *testing.T) {
+		s, err := ResolveSession(sessions, "FIX LOGIN")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.SessionID != "abc-111-aaa" {
+			t.Errorf("got %q, want abc-111-aaa", s.SessionID)
+		}
+	})
+
+	t.Run("text match partial word", func(t *testing.T) {
+		s, err := ResolveSession(sessions, "nextjs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.SessionID != "def-333-ccc" {
+			t.Errorf("got %q, want def-333-ccc", s.SessionID)
+		}
+	})
+
+	t.Run("ambiguous text match", func(t *testing.T) {
+		// "the" appears in firstPrompt of abc-111-aaa ("help me fix the login")
+		// and abc-222-bbb ("deploy the app")
+		_, err := ResolveSession(sessions, "the")
+		if err == nil {
+			t.Fatal("expected error for ambiguous text match")
+		}
+		if !strings.Contains(err.Error(), "matches 2 sessions") {
+			t.Errorf("error = %q, want ambiguity with count", err.Error())
+		}
+	})
+
+	t.Run("no match anywhere", func(t *testing.T) {
+		_, err := ResolveSession(sessions, "kubernetes cluster")
 		if err == nil {
 			t.Fatal("expected error for no match")
 		}
-	})
-
-	t.Run("empty sessions", func(t *testing.T) {
-		_, err := ResolveSession(nil, "")
-		if err == nil {
-			t.Fatal("expected error for empty sessions")
+		if !strings.Contains(err.Error(), "no session matching") {
+			t.Errorf("error = %q, want 'no session matching'", err.Error())
 		}
 	})
+
+	// --- Priority: prefix wins over text ---
+	t.Run("prefix match takes priority over text match", func(t *testing.T) {
+		// "def" is a valid prefix for def-333-ccc AND could match text in other sessions.
+		// Prefix match should win.
+		s, err := ResolveSession(sessions, "def-333")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.SessionID != "def-333-ccc" {
+			t.Errorf("got %q, want def-333-ccc (prefix should win)", s.SessionID)
+		}
+	})
+
+	// --- Edge: query that looks like ID but isn't ---
+	t.Run("ID-like query falls through to text search", func(t *testing.T) {
+		_, err := ResolveSession(sessions, "zzz-999")
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "no session matching") {
+			t.Errorf("error = %q", err.Error())
+		}
+	})
+}
+
+func TestResolveSession_TextMatchShowsContext(t *testing.T) {
+	sessions := []SessionInfo{
+		{SessionID: "aaa", Summary: "Setup Docker", FirstPrompt: "help with docker", Modified: "2026-06-01T00:00:00Z"},
+		{SessionID: "bbb", Summary: "Docker compose fix", FirstPrompt: "fix docker compose", Modified: "2026-05-01T00:00:00Z"},
+	}
+
+	_, err := ResolveSession(sessions, "docker")
+	if err == nil {
+		t.Fatal("expected ambiguous error")
+	}
+	// Error should show both session IDs and their summaries
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "aaa") || !strings.Contains(errMsg, "bbb") {
+		t.Errorf("ambiguous error should list session IDs: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "Setup Docker") || !strings.Contains(errMsg, "Docker compose fix") {
+		t.Errorf("ambiguous error should list summaries: %q", errMsg)
+	}
 }
 
 // helper to set CLAUDE_CONFIG_DIR for tests that call functions using paths.ClaudeConfigHome

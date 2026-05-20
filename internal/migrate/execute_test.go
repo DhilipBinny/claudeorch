@@ -249,8 +249,8 @@ func TestExecute_SessionNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent session")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want 'not found'", err.Error())
+	if !strings.Contains(err.Error(), "no session matching") {
+		t.Errorf("error = %q, want 'no session matching'", err.Error())
 	}
 }
 
