@@ -123,7 +123,10 @@ func newSessionMigrateCmd() *cobra.Command {
 
 Creates a backup before any changes. The JSONL conversation log is moved
 with all 'cwd' fields rewritten to the new directory. Session indexes and
-history.jsonl are updated accordingly.`,
+history.jsonl are updated accordingly.
+
+The --session flag accepts a full session ID, an ID prefix, or a
+case-insensitive substring of the session name/summary.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -132,7 +135,7 @@ history.jsonl are updated accordingly.`,
 	}
 	cmd.Flags().StringVar(&sourceDir, "from", "", "source project directory (required)")
 	cmd.Flags().StringVar(&targetDir, "to", "", "target project directory (required)")
-	cmd.Flags().StringVar(&sessionID, "session", "", "session ID to migrate (default: most recent)")
+	cmd.Flags().StringVar(&sessionID, "session", "", "session ID, ID prefix, or name substring (default: most recent)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without doing it")
 	_ = cmd.MarkFlagRequired("from")
 	_ = cmd.MarkFlagRequired("to")
@@ -146,9 +149,15 @@ func runSessionMigrate(cmd *cobra.Command, sourceDir, targetDir, sessionID strin
 	if err != nil {
 		return fmt.Errorf("resolve source path: %w", err)
 	}
+	if resolved, err := filepath.EvalSymlinks(absSource); err == nil {
+		absSource = resolved
+	}
 	absTarget, err := filepath.Abs(targetDir)
 	if err != nil {
 		return fmt.Errorf("resolve target path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absTarget); err == nil {
+		absTarget = resolved
 	}
 
 	if absSource == absTarget {

@@ -13,6 +13,7 @@ import (
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 )
 
+
 // BackupInfo describes a migration backup directory.
 type BackupInfo struct {
 	Dir       string
@@ -34,7 +35,7 @@ func CreateBackupDir(sessionID string) (string, error) {
 	}
 	name := fmt.Sprintf("migration-%s-%d", prefix, time.Now().Unix())
 	dir := filepath.Join(backupsDir, name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("migrate: create backup dir: %w", err)
 	}
 	return dir, nil
@@ -43,6 +44,10 @@ func CreateBackupDir(sessionID string) (string, error) {
 // BackupFile copies a file into the backup directory with the given name.
 // Silently skips if the source doesn't exist.
 func BackupFile(backupDir, srcPath, backupName string) error {
+	if strings.ContainsAny(backupName, "/\\") || strings.Contains(backupName, "..") {
+		return fmt.Errorf("migrate: invalid backup name %q", backupName)
+	}
+
 	src, err := os.Open(srcPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -53,14 +58,18 @@ func BackupFile(backupDir, srcPath, backupName string) error {
 	defer src.Close()
 
 	dstPath := filepath.Join(backupDir, backupName)
-	dst, err := os.Create(dstPath)
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("migrate: backup create %s: %w", dstPath, err)
 	}
-	defer dst.Close()
 
 	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
 		return fmt.Errorf("migrate: backup copy: %w", err)
+	}
+	if err := dst.Sync(); err != nil {
+		dst.Close()
+		return fmt.Errorf("migrate: backup sync: %w", err)
 	}
 	return dst.Close()
 }

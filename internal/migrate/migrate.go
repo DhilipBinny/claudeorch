@@ -6,6 +6,7 @@ package migrate
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,6 +54,25 @@ type SessionsIndex struct {
 	OriginalPath string       `json:"originalPath"`
 }
 
+func isValidSessionID(sid string) bool {
+	if sid == "" || len(sid) < 8 {
+		return false
+	}
+	for _, c := range sid {
+		if c == '/' || c == '\\' || c == '\x00' {
+			return false
+		}
+	}
+	return !strings.Contains(sid, "..")
+}
+
+func safePrefix(s string, n int) string {
+	if len(s) < n {
+		return s
+	}
+	return s[:n]
+}
+
 // PathToSlug converts an absolute directory path to Claude's project folder slug.
 // e.g. /home/binny/Desktop → -home-binny-Desktop
 func PathToSlug(dir string) (string, error) {
@@ -63,6 +83,7 @@ func PathToSlug(dir string) (string, error) {
 		return "", fmt.Errorf("migrate: path must be absolute: %s", dir)
 	}
 	slug := strings.ReplaceAll(dir, string(filepath.Separator), "-")
+	slug = strings.ReplaceAll(slug, "_", "-")
 	if slug == "" || slug == "-" {
 		return "", fmt.Errorf("migrate: invalid directory for migration: %s", dir)
 	}
@@ -106,7 +127,7 @@ func LoadSessionsIndex(projectDir string) (*SessionsIndex, error) {
 
 // SaveSessionsIndex writes sessions-index.json atomically.
 func SaveSessionsIndex(projectDir string, idx *SessionsIndex) error {
-	if err := fsio.EnsureDir(projectDir, 0o755); err != nil {
+	if err := fsio.EnsureDir(projectDir, 0o700); err != nil {
 		return fmt.Errorf("migrate: ensure project dir: %w", err)
 	}
 	data, err := json.MarshalIndent(idx, "", "  ")
@@ -154,6 +175,8 @@ func DiscoverSessions(projectDir string) ([]SessionInfo, error) {
 			continue
 		}
 
+		jsonlPath := filepath.Join(projectDir, e.Name())
+
 		if existing, ok := sessions[sid]; ok {
 			existing.HasJSONL = true
 			existing.JSONLSize = info.Size()
@@ -161,12 +184,17 @@ func DiscoverSessions(projectDir string) ([]SessionInfo, error) {
 			if existing.Source == "index" {
 				existing.Source = "both"
 			}
+			if existing.Summary == "" {
+				existing.Summary = extractAITitle(jsonlPath)
+			}
 			continue
 		}
 
-		firstPrompt := extractFirstPrompt(filepath.Join(projectDir, e.Name()))
+		firstPrompt := extractFirstPrompt(jsonlPath)
+		summary := extractAITitle(jsonlPath)
 		sessions[sid] = &SessionInfo{
 			SessionID:   sid,
+			Summary:     summary,
 			FirstPrompt: firstPrompt,
 			Modified:    info.ModTime().Format(time.RFC3339),
 			Created:     info.ModTime().Format(time.RFC3339),
@@ -185,6 +213,54 @@ func DiscoverSessions(projectDir string) ([]SessionInfo, error) {
 		return result[i].Modified > result[j].Modified
 	})
 	return result, nil
+}
+
+func extractAITitle(jsonlPath string) string {
+	f, err := os.Open(jsonlPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return ""
+	}
+
+	// ai-title entries are repeated throughout the file; read the last 256KB
+	// to find the most recent one.
+	const tailSize = 256 * 1024
+	offset := fi.Size() - tailSize
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > 0 {
+		f.Seek(offset, 0)
+	}
+
+	buf, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+
+	lines := strings.Split(string(buf), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if !strings.Contains(line, `"ai-title"`) {
+			continue
+		}
+		var obj struct {
+			Type    string `json:"type"`
+			AITitle string `json:"aiTitle"`
+		}
+		if json.Unmarshal([]byte(line), &obj) == nil && obj.Type == "ai-title" && obj.AITitle != "" {
+			return obj.AITitle
+		}
+	}
+	return ""
 }
 
 // extractFirstPrompt reads a JSONL file and returns the first user message
@@ -255,8 +331,9 @@ func scanForFirstPrompt(data []byte) string {
 func truncate(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
-	if len(s) > n {
-		return s[:n-3] + "..."
+	runes := []rune(s)
+	if len(runes) > n {
+		return string(runes[:n-3]) + "..."
 	}
 	return s
 }

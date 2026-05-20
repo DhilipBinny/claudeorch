@@ -23,6 +23,8 @@ func TestPathToSlug(t *testing.T) {
 		{"single dir", "/tmp", "-tmp", false},
 		{"deep nesting", "/a/b/c/d/e", "-a-b-c-d-e", false},
 		{"trailing slash", "/home/binny/", "-home-binny-", false},
+		{"underscore replaced", "/home/binny/binny_dir", "-home-binny-binny-dir", false},
+		{"multiple underscores", "/a_b/c_d_e", "-a-b-c-d-e", false},
 	}
 
 	for _, tt := range tests {
@@ -443,6 +445,145 @@ func TestResolveSession_TextMatchShowsContext(t *testing.T) {
 	}
 	if !strings.Contains(errMsg, "Setup Docker") || !strings.Contains(errMsg, "Docker compose fix") {
 		t.Errorf("ambiguous error should list summaries: %q", errMsg)
+	}
+}
+
+func TestExtractAITitle(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("extracts last ai-title", func(t *testing.T) {
+		lines := []string{
+			`{"type":"user","message":{"content":"hello"}}`,
+			`{"type":"ai-title","aiTitle":"First Title","sessionId":"abc"}`,
+			`{"type":"assistant","message":{"content":"hi"}}`,
+			`{"type":"ai-title","aiTitle":"Updated Title","sessionId":"abc"}`,
+		}
+		path := filepath.Join(dir, "title.jsonl")
+		os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+
+		got := extractAITitle(path)
+		if got != "Updated Title" {
+			t.Errorf("extractAITitle = %q, want %q", got, "Updated Title")
+		}
+	})
+
+	t.Run("no ai-title returns empty", func(t *testing.T) {
+		lines := []string{
+			`{"type":"user","message":{"content":"hello"}}`,
+			`{"type":"assistant","message":{"content":"hi"}}`,
+		}
+		path := filepath.Join(dir, "no-title.jsonl")
+		os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+
+		got := extractAITitle(path)
+		if got != "" {
+			t.Errorf("extractAITitle = %q, want empty", got)
+		}
+	})
+
+	t.Run("empty file returns empty", func(t *testing.T) {
+		path := filepath.Join(dir, "empty.jsonl")
+		os.WriteFile(path, []byte{}, 0o644)
+
+		got := extractAITitle(path)
+		if got != "" {
+			t.Errorf("extractAITitle = %q, want empty", got)
+		}
+	})
+
+	t.Run("nonexistent file returns empty", func(t *testing.T) {
+		got := extractAITitle(filepath.Join(dir, "nope.jsonl"))
+		if got != "" {
+			t.Errorf("extractAITitle = %q, want empty", got)
+		}
+	})
+}
+
+func TestDiscoverSessions_AITitleFromJSONL(t *testing.T) {
+	dir := t.TempDir()
+
+	lines := []string{
+		`{"type":"user","message":{"content":"help me debug"}}`,
+		`{"type":"ai-title","aiTitle":"Debug website display","sessionId":"sess-1"}`,
+		`{"type":"assistant","message":{"content":"sure"}}`,
+	}
+	content := strings.Join(lines, "\n") + "\n"
+	os.WriteFile(filepath.Join(dir, "sess-1.jsonl"), []byte(content), 0o644)
+
+	sessions, err := DiscoverSessions(dir)
+	if err != nil {
+		t.Fatalf("DiscoverSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	if sessions[0].Summary != "Debug website display" {
+		t.Errorf("Summary = %q, want %q", sessions[0].Summary, "Debug website display")
+	}
+	if sessions[0].FirstPrompt != "help me debug" {
+		t.Errorf("FirstPrompt = %q, want %q", sessions[0].FirstPrompt, "help me debug")
+	}
+}
+
+func TestDiscoverSessions_IndexSummaryTakesPriority(t *testing.T) {
+	dir := t.TempDir()
+
+	idx := SessionsIndex{
+		Version: 1,
+		Entries: []IndexEntry{
+			{SessionID: "sess-1", Summary: "Index Summary", Modified: "2026-01-01T00:00:00Z"},
+		},
+	}
+	data, _ := json.MarshalIndent(idx, "", "  ")
+	os.WriteFile(filepath.Join(dir, "sessions-index.json"), data, 0o644)
+
+	lines := []string{
+		`{"type":"user","message":{"content":"hello"}}`,
+		`{"type":"ai-title","aiTitle":"JSONL Title","sessionId":"sess-1"}`,
+	}
+	os.WriteFile(filepath.Join(dir, "sess-1.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+
+	sessions, err := DiscoverSessions(dir)
+	if err != nil {
+		t.Fatalf("DiscoverSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	// Index summary should take priority when present
+	if sessions[0].Summary != "Index Summary" {
+		t.Errorf("Summary = %q, want %q (index should take priority)", sessions[0].Summary, "Index Summary")
+	}
+}
+
+func TestDiscoverSessions_FallsBackToAITitle(t *testing.T) {
+	dir := t.TempDir()
+
+	// Index entry with no summary
+	idx := SessionsIndex{
+		Version: 1,
+		Entries: []IndexEntry{
+			{SessionID: "sess-1", Summary: "", Modified: "2026-01-01T00:00:00Z"},
+		},
+	}
+	data, _ := json.MarshalIndent(idx, "", "  ")
+	os.WriteFile(filepath.Join(dir, "sessions-index.json"), data, 0o644)
+
+	lines := []string{
+		`{"type":"user","message":{"content":"hello"}}`,
+		`{"type":"ai-title","aiTitle":"Fallback Title","sessionId":"sess-1"}`,
+	}
+	os.WriteFile(filepath.Join(dir, "sess-1.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+
+	sessions, err := DiscoverSessions(dir)
+	if err != nil {
+		t.Fatalf("DiscoverSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(sessions))
+	}
+	if sessions[0].Summary != "Fallback Title" {
+		t.Errorf("Summary = %q, want %q (should fall back to ai-title)", sessions[0].Summary, "Fallback Title")
 	}
 }
 

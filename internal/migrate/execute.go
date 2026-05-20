@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -151,6 +152,10 @@ func Plan(opts MigrateOptions) ([]Action, *SessionInfo, error) {
 	}
 
 	sid := session.SessionID
+	if !isValidSessionID(sid) {
+		return nil, nil, fmt.Errorf("migrate: invalid session ID %q (must be ≥8 chars, no path separators or '..')", sid)
+	}
+
 	var actions []Action
 
 	jsonlSrc := filepath.Join(sourceProject, sid+".jsonl")
@@ -169,7 +174,7 @@ func Plan(opts MigrateOptions) ([]Action, *SessionInfo, error) {
 	if info, err := os.Stat(sessionDirSrc); err == nil && info.IsDir() {
 		actions = append(actions, Action{
 			Kind:    ActionMoveDir,
-			Desc:    fmt.Sprintf("Move session dir: %s/ → %s/", sid[:8], filepath.Base(targetProject)),
+			Desc:    fmt.Sprintf("Move session dir: %s/ → %s/", safePrefix(sid, 8), filepath.Base(targetProject)),
 			SrcPath: sessionDirSrc,
 			DstPath: sessionDirDst,
 		})
@@ -183,24 +188,24 @@ func Plan(opts MigrateOptions) ([]Action, *SessionInfo, error) {
 	if _, err := os.Stat(sessionEnvDir); err == nil {
 		actions = append(actions, Action{
 			Kind: ActionNote,
-			Desc: fmt.Sprintf("session-env/%s/ exists (session-global, no move needed)", sid[:8]),
+			Desc: fmt.Sprintf("session-env/%s/ exists (session-global, no move needed)", safePrefix(sid, 8)),
 		})
 	}
 	fileHistoryDir := filepath.Join(configHome, "file-history", sid)
 	if _, err := os.Stat(fileHistoryDir); err == nil {
 		actions = append(actions, Action{
 			Kind: ActionNote,
-			Desc: fmt.Sprintf("file-history/%s/ exists (session-global, no move needed)", sid[:8]),
+			Desc: fmt.Sprintf("file-history/%s/ exists (session-global, no move needed)", safePrefix(sid, 8)),
 		})
 	}
 
 	actions = append(actions, Action{
 		Kind: ActionUpdateSourceIndex,
-		Desc: fmt.Sprintf("Remove %s... from source sessions-index.json", sid[:12]),
+		Desc: fmt.Sprintf("Remove %s... from source sessions-index.json", safePrefix(sid, 12)),
 	})
 	actions = append(actions, Action{
 		Kind: ActionUpdateTargetIndex,
-		Desc: fmt.Sprintf("Add %s... to target sessions-index.json", sid[:12]),
+		Desc: fmt.Sprintf("Add %s... to target sessions-index.json", safePrefix(sid, 12)),
 	})
 	actions = append(actions, Action{
 		Kind: ActionUpdateHistory,
@@ -212,6 +217,10 @@ func Plan(opts MigrateOptions) ([]Action, *SessionInfo, error) {
 
 // Execute runs the full migration: backup, move files, update indexes.
 func Execute(opts MigrateOptions) (*MigrateResult, error) {
+	if opts.SourceDir == opts.TargetDir {
+		return nil, fmt.Errorf("migrate: source and target directories are the same: %s", opts.SourceDir)
+	}
+
 	actions, session, err := Plan(opts)
 	if err != nil {
 		return nil, err
@@ -222,6 +231,17 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	lockPath, err := paths.LockFile()
+	if err != nil {
+		return nil, fmt.Errorf("migrate: resolve lock file: %w", err)
+	}
+	release, err := fsio.AcquireLock(context.Background(), lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("migrate: acquire lock: %w", err)
+	}
+	defer release()
+
 	running, pid, err := IsSessionRunning(configHome, sid)
 	if err != nil {
 		return nil, err
@@ -230,8 +250,14 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 		return nil, fmt.Errorf("migrate: session %s is currently running (PID %d) — close it first", sid, pid)
 	}
 
-	sourceProject, _ := ProjectDir(opts.SourceDir)
-	targetProject, _ := ProjectDir(opts.TargetDir)
+	sourceProject, err := ProjectDir(opts.SourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("migrate: resolve source project: %w", err)
+	}
+	targetProject, err := ProjectDir(opts.TargetDir)
+	if err != nil {
+		return nil, fmt.Errorf("migrate: resolve target project: %w", err)
+	}
 
 	backupDir, err := CreateBackupDir(sid)
 	if err != nil {
@@ -243,20 +269,30 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 		BackupDir: backupDir,
 	}
 
-	// Create backups
 	jsonlSrc := filepath.Join(sourceProject, sid+".jsonl")
-	_ = BackupFile(backupDir, jsonlSrc, sid+".jsonl.bak")
+	if err := BackupFile(backupDir, jsonlSrc, sid+".jsonl.bak"); err != nil {
+		return nil, fmt.Errorf("migrate: backup JSONL failed — aborting: %w", err)
+	}
 
 	sourceIndexPath := filepath.Join(sourceProject, "sessions-index.json")
-	_ = BackupFile(backupDir, sourceIndexPath, "source-sessions-index.json.bak")
+	if err := BackupFile(backupDir, sourceIndexPath, "source-sessions-index.json.bak"); err != nil {
+		return nil, fmt.Errorf("migrate: backup source index failed — aborting: %w", err)
+	}
 
 	targetIndexPath := filepath.Join(targetProject, "sessions-index.json")
-	_ = BackupFile(backupDir, targetIndexPath, "target-sessions-index.json.bak")
+	if err := BackupFile(backupDir, targetIndexPath, "target-sessions-index.json.bak"); err != nil {
+		return nil, fmt.Errorf("migrate: backup target index failed — aborting: %w", err)
+	}
 
-	historyFile, _ := paths.ClaudeHistoryFile()
-	_ = BackupFile(backupDir, historyFile, "history.jsonl.bak")
+	historyFile, err := paths.ClaudeHistoryFile()
+	if err != nil {
+		return nil, fmt.Errorf("migrate: resolve history file: %w", err)
+	}
+	if err := BackupFile(backupDir, historyFile, "history.jsonl.bak"); err != nil {
+		return nil, fmt.Errorf("migrate: backup history failed — aborting: %w", err)
+	}
 
-	if err := fsio.EnsureDir(targetProject, 0o755); err != nil {
+	if err := fsio.EnsureDir(targetProject, 0o700); err != nil {
 		return nil, fmt.Errorf("migrate: create target project dir: %w", err)
 	}
 
@@ -271,7 +307,10 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 			result.Actions = append(result.Actions, fmt.Sprintf("[moved+rewritten] %s (%d cwd entries updated)", filepath.Base(action.SrcPath), rewrites))
 
 		case ActionMoveDir:
-			if _, err := os.Stat(action.DstPath); err == nil {
+			if info, err := os.Lstat(action.DstPath); err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					return nil, fmt.Errorf("migrate: target %s is a symlink — refusing to overwrite", action.DstPath)
+				}
 				if err := os.RemoveAll(action.DstPath); err != nil {
 					return nil, fmt.Errorf("migrate: remove existing target dir: %w", err)
 				}
@@ -281,7 +320,7 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 					return nil, fmt.Errorf("migrate: move session dir: %w", err)
 				}
 			}
-			result.Actions = append(result.Actions, fmt.Sprintf("[moved] %s/", filepath.Base(action.SrcPath)[:8]))
+			result.Actions = append(result.Actions, fmt.Sprintf("[moved] %s/", safePrefix(filepath.Base(action.SrcPath), 8)))
 
 		case ActionNote:
 			result.Actions = append(result.Actions, fmt.Sprintf("[info] %s", action.Desc))
@@ -290,13 +329,13 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 			if err := removeFromIndex(sourceProject, sid); err != nil {
 				return nil, fmt.Errorf("migrate: update source index: %w", err)
 			}
-			result.Actions = append(result.Actions, fmt.Sprintf("[updated] Removed %s... from source index", sid[:12]))
+			result.Actions = append(result.Actions, fmt.Sprintf("[updated] Removed %s... from source index", safePrefix(sid, 12)))
 
 		case ActionUpdateTargetIndex:
 			if err := addToIndex(targetProject, opts.TargetDir, sid, session); err != nil {
 				return nil, fmt.Errorf("migrate: update target index: %w", err)
 			}
-			result.Actions = append(result.Actions, fmt.Sprintf("[updated] Added %s... to target index", sid[:12]))
+			result.Actions = append(result.Actions, fmt.Sprintf("[updated] Added %s... to target index", safePrefix(sid, 12)))
 
 		case ActionUpdateHistory:
 			updated, err := rewriteHistory(opts.SourceDir, opts.TargetDir, sid)
@@ -318,7 +357,7 @@ func moveJSONLWithRewrite(srcPath, dstPath, oldCwd, newCwd string) (int, error) 
 	defer src.Close()
 
 	dstDir := filepath.Dir(dstPath)
-	if err := fsio.EnsureDir(dstDir, 0o755); err != nil {
+	if err := fsio.EnsureDir(dstDir, 0o700); err != nil {
 		return 0, err
 	}
 
@@ -340,9 +379,9 @@ func moveJSONLWithRewrite(srcPath, dstPath, oldCwd, newCwd string) (int, error) 
 			if cwd, ok := obj["cwd"].(string); ok && cwd == oldCwd {
 				obj["cwd"] = newCwd
 				rewrites++
-			}
-			if rewritten, err := json.Marshal(obj); err == nil {
-				line = string(rewritten)
+				if rewritten, err := json.Marshal(obj); err == nil {
+					line = string(rewritten)
+				}
 			}
 		}
 		writer.WriteString(line)
@@ -373,7 +412,9 @@ func moveJSONLWithRewrite(srcPath, dstPath, oldCwd, newCwd string) (int, error) 
 		return 0, err
 	}
 
-	os.Remove(srcPath)
+	if err := os.Remove(srcPath); err != nil {
+		return rewrites, fmt.Errorf("migrate: remove source JSONL after move: %w", err)
+	}
 	return rewrites, nil
 }
 
@@ -478,10 +519,15 @@ func rewriteHistory(oldDir, newDir, sessionID string) (int, error) {
 }
 
 func copyDirAndRemove(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("migrate: refusing to copy symlink: %s", path)
+		}
+
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
@@ -498,7 +544,7 @@ func copyDirAndRemove(src, dst string) error {
 		}
 		defer srcFile.Close()
 
-		dstFile, err := os.Create(target)
+		dstFile, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
 		if err != nil {
 			return err
 		}
@@ -507,9 +553,9 @@ func copyDirAndRemove(src, dst string) error {
 		if _, err := io.Copy(dstFile, srcFile); err != nil {
 			return err
 		}
-		if err := dstFile.Chmod(info.Mode()); err != nil {
-			return err
-		}
-		return nil
-	})
+		return dstFile.Sync()
+	}); err != nil {
+		return err
+	}
+	return os.RemoveAll(src)
 }
