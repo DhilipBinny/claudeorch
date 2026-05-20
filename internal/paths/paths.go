@@ -220,6 +220,33 @@ func LockFile() (string, error) {
 	return filepath.Join(home, "locks", ".lock"), nil
 }
 
+// ClaudeProjectsDir returns <claude_config_home>/projects (session metadata per project).
+func ClaudeProjectsDir() (string, error) {
+	home, err := ClaudeConfigHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "projects"), nil
+}
+
+// ClaudeHistoryFile returns <claude_config_home>/history.jsonl (global activity log).
+func ClaudeHistoryFile() (string, error) {
+	home, err := ClaudeConfigHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "history.jsonl"), nil
+}
+
+// ClaudeBackupsDir returns <claude_config_home>/backups (migration backups).
+func ClaudeBackupsDir() (string, error) {
+	home, err := ClaudeConfigHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "backups"), nil
+}
+
 // CacheDir returns <claudeorch_home>/cache (ephemeral data like usage responses).
 func CacheDir() (string, error) {
 	home, err := ClaudeorchHome()
