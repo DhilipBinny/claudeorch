@@ -11,6 +11,9 @@ PLATFORMS=(
   "darwin  arm64"
 )
 
+COMMIT="$(git rev-parse --short HEAD)"
+BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 echo "==> Building ${VERSION} for ${#PLATFORMS[@]} targets..."
 
 for entry in "${PLATFORMS[@]}"; do
@@ -18,7 +21,7 @@ for entry in "${PLATFORMS[@]}"; do
   name="claudeorch-${os}-${arch}"
   echo "    ${name}"
   GOOS="$os" GOARCH="$arch" go build \
-    -ldflags="-s -w -X main.version=${VERSION}" \
+    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
     -o "${OUTDIR}/${name}" \
     ./cmd/claudeorch
 done

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/user"
 	"strings"
+	"testing"
 
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 )
@@ -19,6 +20,25 @@ import (
 // svce="Claude Code-credentials". This is NOT "claude.ai", "Claude Code",
 // or "claude" — all of which we tested and got empty results for.
 const keychainService = "Claude Code-credentials"
+
+// keychainDisabled reports whether the Keychain must not be touched,
+// forcing flat-file mode on macOS. True in two cases:
+//
+//   - Inside any test binary (testing.Testing()). This is the load-bearing
+//     guard: without it, any test that reaches ReadLive/WriteLive reads —
+//     or destroys — the developer's real Claude Code keychain entry.
+//   - CLAUDEORCH_NO_KEYCHAIN is set (to anything but "0"/"false"). This
+//     exists for spawned claudeorch binaries in integration tests and CI,
+//     where testing.Testing() is false. It is NOT a user-facing mode:
+//     Claude Code itself still reads and writes only the Keychain, so a
+//     real macOS login operated in flat-file mode would split-brain.
+func keychainDisabled() bool {
+	if testing.Testing() {
+		return true
+	}
+	v := os.Getenv("CLAUDEORCH_NO_KEYCHAIN")
+	return v != "" && v != "0" && v != "false"
+}
 
 // ReadLive reads Claude Code's current OAuth credentials.
 //
@@ -33,10 +53,13 @@ const keychainService = "Claude Code-credentials"
 //     overrides and headless setups where the user placed creds manually.
 //  3. If both fail, return a descriptive error with recovery steps.
 func ReadLive(credsPath string) ([]byte, error) {
-	// Try Keychain first.
-	data, err := readKeychain()
-	if err == nil && len(data) > 0 {
-		return data, nil
+	// Try Keychain first (unless disabled — then fall through to the flat
+	// file, keeping the empty-file guard and the descriptive error below).
+	if !keychainDisabled() {
+		data, err := readKeychain()
+		if err == nil && len(data) > 0 {
+			return data, nil
+		}
 	}
 
 	// Fallback: flat file (CLAUDE_CONFIG_DIR, headless, or custom setup).
@@ -65,6 +88,10 @@ func ReadLive(credsPath string) ([]byte, error) {
 // still proceeds. If the flat-file write fails, the Keychain write
 // already happened. Either one is sufficient for Claude Code to function.
 func WriteLive(credsPath string, data []byte) error {
+	if keychainDisabled() {
+		return fsio.WriteFileAtomic(credsPath, data, 0o600)
+	}
+
 	keychainErr := writeKeychain(data)
 	fileErr := fsio.WriteFileAtomic(credsPath, data, 0o600)
 
@@ -78,9 +105,10 @@ func WriteLive(credsPath string, data []byte) error {
 }
 
 // IsKeychainBased reports whether this platform stores live credentials
-// in an OS-managed secret store. True on macOS.
+// in an OS-managed secret store. True on macOS, unless flat-file mode is
+// forced via CLAUDEORCH_NO_KEYCHAIN=1.
 func IsKeychainBased() bool {
-	return true
+	return !keychainDisabled()
 }
 
 // currentUsername returns the macOS username for the Keychain account field.
