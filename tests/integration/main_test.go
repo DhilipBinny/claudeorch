@@ -11,6 +11,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Force flat-file credential mode — the spawned claudeorch binaries
+	// inherit this env. Without it, commands like swap/add would touch the
+	// developer's real macOS Keychain entry.
+	os.Setenv("CLAUDEORCH_NO_KEYCHAIN", "1")
+
 	// Build the claudeorch binary into a temp dir.
 	tmp, err := os.MkdirTemp("", "claudeorch-inttest-*")
 	if err != nil {

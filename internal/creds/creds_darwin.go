@@ -20,6 +20,16 @@ import (
 // or "claude" — all of which we tested and got empty results for.
 const keychainService = "Claude Code-credentials"
 
+// keychainDisabled reports whether CLAUDEORCH_NO_KEYCHAIN=1 is set, which
+// forces flat-file mode on macOS. Two audiences:
+//   - Tests: MUST set this (the test targets in the Makefile do). Without
+//     it, any test that reaches ReadLive/WriteLive reads — or destroys —
+//     the user's real Claude Code keychain entry.
+//   - Headless/SSH setups where the login keychain is unavailable.
+func keychainDisabled() bool {
+	return os.Getenv("CLAUDEORCH_NO_KEYCHAIN") == "1"
+}
+
 // ReadLive reads Claude Code's current OAuth credentials.
 //
 // On macOS, credentials live in the system Keychain, not on disk. Claude
@@ -33,6 +43,14 @@ const keychainService = "Claude Code-credentials"
 //     overrides and headless setups where the user placed creds manually.
 //  3. If both fail, return a descriptive error with recovery steps.
 func ReadLive(credsPath string) ([]byte, error) {
+	if keychainDisabled() {
+		data, err := os.ReadFile(credsPath)
+		if err != nil {
+			return nil, fmt.Errorf("read credentials (keychain disabled): %w", err)
+		}
+		return data, nil
+	}
+
 	// Try Keychain first.
 	data, err := readKeychain()
 	if err == nil && len(data) > 0 {
@@ -65,6 +83,10 @@ func ReadLive(credsPath string) ([]byte, error) {
 // still proceeds. If the flat-file write fails, the Keychain write
 // already happened. Either one is sufficient for Claude Code to function.
 func WriteLive(credsPath string, data []byte) error {
+	if keychainDisabled() {
+		return fsio.WriteFileAtomic(credsPath, data, 0o600)
+	}
+
 	keychainErr := writeKeychain(data)
 	fileErr := fsio.WriteFileAtomic(credsPath, data, 0o600)
 
@@ -78,9 +100,10 @@ func WriteLive(credsPath string, data []byte) error {
 }
 
 // IsKeychainBased reports whether this platform stores live credentials
-// in an OS-managed secret store. True on macOS.
+// in an OS-managed secret store. True on macOS, unless flat-file mode is
+// forced via CLAUDEORCH_NO_KEYCHAIN=1.
 func IsKeychainBased() bool {
-	return true
+	return !keychainDisabled()
 }
 
 // currentUsername returns the macOS username for the Keychain account field.
