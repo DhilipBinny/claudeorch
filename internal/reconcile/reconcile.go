@@ -212,8 +212,12 @@ func reconcileOne(prof *profile.Profile, store *profile.Store, p Paths,
 	freshest := pickFreshest(sources)
 
 	// Promote if freshest isn't already the profile copy (and is readable).
+	// Write the bytes we actually compared (creds.Raw) — re-reading from
+	// freshest.path would be wrong for the "live" source on macOS, where
+	// the creds come from the Keychain and the flat file at that path may
+	// hold stale tokens.
 	if freshest != nil && freshest.label != "profile" && freshest.creds != nil {
-		if err := copyCreds(freshest.path, profileCredsPath); err != nil {
+		if err := writeCredsRaw(freshest.creds.Raw, profileCredsPath); err != nil {
 			return fmt.Errorf("reconcile: promote %s → %s: %w",
 				freshest.label, prof.Name, err)
 		}
@@ -346,11 +350,16 @@ func readCreds(path string) *schema.Credentials {
 	return c
 }
 
+// readLiveFn reads the live credential bytes. Package-level so tests can
+// substitute a hermetic reader — the default creds.ReadLive consults the
+// real macOS Keychain, which tests must never touch.
+var readLiveFn = creds.ReadLive
+
 // readLiveCreds reads Claude Code's live credentials using the platform-
 // aware creds package: flat file on Linux, Keychain on macOS. Returns
 // nil on any error (same defensive behaviour as readCreds).
 func readLiveCreds(credsPath string) *schema.Credentials {
-	data, err := creds.ReadLive(credsPath)
+	data, err := readLiveFn(credsPath)
 	if err != nil {
 		return nil
 	}
@@ -386,13 +395,8 @@ func pickFreshest(sources []credSource) *credSource {
 	return best
 }
 
-// copyCreds atomically copies src → dst at mode 0600. Matches the pattern
-// used elsewhere (fsio.WriteFileAtomic with the source bytes).
-func copyCreds(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
+// writeCredsRaw atomically writes a credential blob to dst at mode 0600.
+func writeCredsRaw(data []byte, dst string) error {
 	if err := fsio.EnsureDir(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}

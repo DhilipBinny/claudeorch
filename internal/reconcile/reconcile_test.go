@@ -15,7 +15,7 @@ import (
 // Also uses matching email/org to be able to compare identity.
 func writeCreds(t *testing.T, path string, accessToken, refreshToken string, expiresHoursFromNow int) {
 	t.Helper()
-	expiresMs := time.Now().Add(time.Duration(expiresHoursFromNow)*time.Hour).UnixMilli()
+	expiresMs := time.Now().Add(time.Duration(expiresHoursFromNow) * time.Hour).UnixMilli()
 	payload := map[string]any{
 		"claudeAiOauth": map[string]any{
 			"accessToken":  accessToken,
@@ -52,8 +52,13 @@ func writeClaudeJSON(t *testing.T, path, email, orgUUID string) {
 }
 
 // makeEnv sets up a temp paths struct + empty profiles/isolate roots.
+// It also stubs readLiveFn to a plain file read so tests never consult
+// the real macOS Keychain (which creds.ReadLive tries first on darwin).
 func makeEnv(t *testing.T) Paths {
 	t.Helper()
+	prev := readLiveFn
+	readLiveFn = os.ReadFile
+	t.Cleanup(func() { readLiveFn = prev })
 	root := t.TempDir()
 	return Paths{
 		ClaudeConfigHome: filepath.Join(root, ".claude"),
@@ -121,6 +126,49 @@ func TestReconcile_PromoteLiveToProfile_WhenLiveMatchesIdentity(t *testing.T) {
 	data, _ := os.ReadFile(profileCreds)
 	if !contains(string(data), "fresh_access") {
 		t.Errorf("profile creds not promoted: %s", data)
+	}
+}
+
+// Regression test for the macOS Keychain promotion bug: the live source's
+// parsed creds (from the Keychain) can differ from the flat file at the
+// live path (stale leftover). Promotion must write the bytes that were
+// actually read and compared — never re-read the flat file.
+func TestReconcile_PromoteLive_WritesReadBytes_NotFlatFile(t *testing.T) {
+	p := makeEnv(t)
+	s := profile.NewStore()
+	s.Profiles["work"] = sampleProfile("work", "a@x.com")
+	_ = s.SetActive("work")
+
+	profileCreds := filepath.Join(p.ProfilesRoot, "work", "credentials.json")
+	writeCreds(t, profileCreds, "stale_access", "stale_refresh", -1)
+
+	writeClaudeJSON(t, p.ClaudeJSONPath, "a@x.com", "org-work")
+
+	// Flat file at the live path holds STALE tokens (claudeorch's own
+	// leftover from a previous swap — Claude Code only updates the Keychain).
+	liveCreds := filepath.Join(p.ClaudeConfigHome, ".credentials.json")
+	writeCreds(t, liveCreds, "flatfile_stale_access", "flatfile_stale_refresh", -2)
+
+	// The live reader (Keychain on macOS) returns FRESH tokens.
+	keychainBlob := filepath.Join(t.TempDir(), "keychain.json")
+	writeCreds(t, keychainBlob, "keychain_access", "keychain_refresh", 1)
+	prev := readLiveFn
+	readLiveFn = func(string) ([]byte, error) { return os.ReadFile(keychainBlob) }
+	t.Cleanup(func() { readLiveFn = prev })
+
+	rep, err := Reconcile(s, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.TokensPromoted) != 1 || rep.TokensPromoted[0] != "work" {
+		t.Fatalf("TokensPromoted = %v, want [work]", rep.TokensPromoted)
+	}
+	data, _ := os.ReadFile(profileCreds)
+	if !contains(string(data), "keychain_access") {
+		t.Errorf("profile creds must hold the Keychain bytes, got: %s", data)
+	}
+	if contains(string(data), "flatfile_stale_access") {
+		t.Errorf("profile creds must NOT hold the stale flat-file bytes: %s", data)
 	}
 }
 
