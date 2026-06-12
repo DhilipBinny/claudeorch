@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/user"
 	"strings"
+	"testing"
 
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 )
@@ -20,14 +21,23 @@ import (
 // or "claude" — all of which we tested and got empty results for.
 const keychainService = "Claude Code-credentials"
 
-// keychainDisabled reports whether CLAUDEORCH_NO_KEYCHAIN=1 is set, which
-// forces flat-file mode on macOS. Two audiences:
-//   - Tests: MUST set this (the test targets in the Makefile do). Without
-//     it, any test that reaches ReadLive/WriteLive reads — or destroys —
-//     the user's real Claude Code keychain entry.
-//   - Headless/SSH setups where the login keychain is unavailable.
+// keychainDisabled reports whether the Keychain must not be touched,
+// forcing flat-file mode on macOS. True in two cases:
+//
+//   - Inside any test binary (testing.Testing()). This is the load-bearing
+//     guard: without it, any test that reaches ReadLive/WriteLive reads —
+//     or destroys — the developer's real Claude Code keychain entry.
+//   - CLAUDEORCH_NO_KEYCHAIN is set (to anything but "0"/"false"). This
+//     exists for spawned claudeorch binaries in integration tests and CI,
+//     where testing.Testing() is false. It is NOT a user-facing mode:
+//     Claude Code itself still reads and writes only the Keychain, so a
+//     real macOS login operated in flat-file mode would split-brain.
 func keychainDisabled() bool {
-	return os.Getenv("CLAUDEORCH_NO_KEYCHAIN") == "1"
+	if testing.Testing() {
+		return true
+	}
+	v := os.Getenv("CLAUDEORCH_NO_KEYCHAIN")
+	return v != "" && v != "0" && v != "false"
 }
 
 // ReadLive reads Claude Code's current OAuth credentials.
@@ -43,18 +53,13 @@ func keychainDisabled() bool {
 //     overrides and headless setups where the user placed creds manually.
 //  3. If both fail, return a descriptive error with recovery steps.
 func ReadLive(credsPath string) ([]byte, error) {
-	if keychainDisabled() {
-		data, err := os.ReadFile(credsPath)
-		if err != nil {
-			return nil, fmt.Errorf("read credentials (keychain disabled): %w", err)
+	// Try Keychain first (unless disabled — then fall through to the flat
+	// file, keeping the empty-file guard and the descriptive error below).
+	if !keychainDisabled() {
+		data, err := readKeychain()
+		if err == nil && len(data) > 0 {
+			return data, nil
 		}
-		return data, nil
-	}
-
-	// Try Keychain first.
-	data, err := readKeychain()
-	if err == nil && len(data) > 0 {
-		return data, nil
 	}
 
 	// Fallback: flat file (CLAUDE_CONFIG_DIR, headless, or custom setup).

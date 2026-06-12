@@ -52,13 +52,10 @@ func writeClaudeJSON(t *testing.T, path, email, orgUUID string) {
 }
 
 // makeEnv sets up a temp paths struct + empty profiles/isolate roots.
-// It also stubs readLiveFn to a plain file read so tests never consult
-// the real macOS Keychain (which creds.ReadLive tries first on darwin).
+// Tests use the real creds.ReadLive: inside a test binary it never touches
+// the macOS Keychain (keychainDisabled() is true) and reads the flat file.
 func makeEnv(t *testing.T) Paths {
 	t.Helper()
-	prev := readLiveFn
-	readLiveFn = os.ReadFile
-	t.Cleanup(func() { readLiveFn = prev })
 	root := t.TempDir()
 	return Paths{
 		ClaudeConfigHome: filepath.Join(root, ".claude"),

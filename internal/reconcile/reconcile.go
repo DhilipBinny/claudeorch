@@ -114,10 +114,12 @@ func joinNames(names []string) string {
 }
 
 // credSource describes one candidate location for a profile's tokens.
+// It deliberately carries no path: for the "live" source on macOS the
+// bytes come from the Keychain, and the flat file at the corresponding
+// path may hold stale tokens — creds.Raw is the only authority.
 type credSource struct {
-	label string // "profile" / "isolate" / "live"
-	path  string
-	creds *schema.Credentials // nil when path doesn't exist or is unreadable
+	label string              // "profile" / "isolate" / "live"
+	creds *schema.Credentials // nil when the source is missing or unreadable
 }
 
 // Reconcile runs the freshest-wins sync + state correction pass across
@@ -186,12 +188,12 @@ func reconcileOne(prof *profile.Profile, store *profile.Store, p Paths,
 	liveCredsPath := filepath.Join(p.ClaudeConfigHome, ".credentials.json")
 
 	sources := []credSource{
-		{label: "profile", path: profileCredsPath, creds: readCreds(profileCredsPath)},
+		{label: "profile", creds: readCreds(profileCredsPath)},
 	}
 
 	if _, err := os.Stat(isolateCredsPath); err == nil {
 		sources = append(sources, credSource{
-			label: "isolate", path: isolateCredsPath, creds: readCreds(isolateCredsPath),
+			label: "isolate", creds: readCreds(isolateCredsPath),
 		})
 	}
 
@@ -202,9 +204,7 @@ func reconcileOne(prof *profile.Profile, store *profile.Store, p Paths,
 		liveIdentity.EmailAddress == prof.Email &&
 		liveIdentity.OrganizationUUID == prof.OrganizationUUID {
 		if lc := readLiveCreds(liveCredsPath); lc != nil {
-			sources = append(sources, credSource{
-				label: "live", path: liveCredsPath, creds: lc,
-			})
+			sources = append(sources, credSource{label: "live", creds: lc})
 		}
 	}
 
@@ -212,10 +212,8 @@ func reconcileOne(prof *profile.Profile, store *profile.Store, p Paths,
 	freshest := pickFreshest(sources)
 
 	// Promote if freshest isn't already the profile copy (and is readable).
-	// Write the bytes we actually compared (creds.Raw) — re-reading from
-	// freshest.path would be wrong for the "live" source on macOS, where
-	// the creds come from the Keychain and the flat file at that path may
-	// hold stale tokens.
+	// Write the bytes we actually compared (creds.Raw — see credSource for
+	// why a path-based copy would be wrong here).
 	if freshest != nil && freshest.label != "profile" && freshest.creds != nil {
 		if err := writeCredsRaw(freshest.creds.Raw, profileCredsPath); err != nil {
 			return fmt.Errorf("reconcile: promote %s → %s: %w",

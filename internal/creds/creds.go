@@ -2,7 +2,7 @@
 // Claude Code's "live" OAuth credentials — the ones Claude itself actively
 // uses and rotates.
 //
-// Why this package exists
+// # Why this package exists
 //
 // On Linux, Claude Code stores credentials at ~/.claude/.credentials.json
 // as a plain JSON file. On macOS, they're in the system Keychain under

@@ -15,7 +15,7 @@ import (
 // offset (in hours from now). Negative values = expired.
 func writeCredsAt(t *testing.T, path, accessToken, refreshToken string, hoursFromNow int) {
 	t.Helper()
-	expiresMs := time.Now().Add(time.Duration(hoursFromNow)*time.Hour).UnixMilli()
+	expiresMs := time.Now().Add(time.Duration(hoursFromNow) * time.Hour).UnixMilli()
 	payload := map[string]any{
 		"claudeAiOauth": map[string]any{
 			"accessToken":  accessToken,
