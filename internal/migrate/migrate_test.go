@@ -25,6 +25,8 @@ func TestPathToSlug(t *testing.T) {
 		{"trailing slash", "/home/binny/", "-home-binny-", false},
 		{"underscore replaced", "/home/binny/binny_dir", "-home-binny-binny-dir", false},
 		{"multiple underscores", "/a_b/c_d_e", "-a-b-c-d-e", false},
+		{"dots replaced", "/home/user/courses.bsigma.ai", "-home-user-courses-bsigma-ai", false},
+		{"mixed dots and underscores", "/a.b/c_d.e", "-a-b-c-d-e", false},
 	}
 
 	for _, tt := range tests {
@@ -43,6 +45,20 @@ func TestPathToSlug(t *testing.T) {
 				t.Errorf("PathToSlug(%q) = %q, want %q", tt.dir, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProjectDir_DotsReplaced(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configHome)
+
+	dir, err := ProjectDir("/home/user/courses.bsigma.ai")
+	if err != nil {
+		t.Fatalf("ProjectDir: %v", err)
+	}
+	want := filepath.Join(configHome, "projects", "-home-user-courses-bsigma-ai")
+	if dir != want {
+		t.Errorf("ProjectDir = %q, want %q", dir, want)
 	}
 }
 

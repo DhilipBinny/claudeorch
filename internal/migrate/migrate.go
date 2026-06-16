@@ -84,6 +84,7 @@ func PathToSlug(dir string) (string, error) {
 	}
 	slug := strings.ReplaceAll(dir, string(filepath.Separator), "-")
 	slug = strings.ReplaceAll(slug, "_", "-")
+	slug = strings.ReplaceAll(slug, ".", "-")
 	if slug == "" || slug == "-" {
 		return "", fmt.Errorf("migrate: invalid directory for migration: %s", dir)
 	}
