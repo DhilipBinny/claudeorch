@@ -221,6 +221,7 @@ func reconcileOne(prof *profile.Profile, store *profile.Store, p Paths,
 		}
 		rep.TokensPromoted = append(rep.TokensPromoted, prof.Name)
 		prof.TokensLastSeenAt = freshest.creds.ExpiresAt
+		prof.NeedsReauth = false
 	} else if freshest != nil && freshest.creds != nil {
 		// No promotion needed, but update TokensLastSeenAt anyway.
 		prof.TokensLastSeenAt = freshest.creds.ExpiresAt
