@@ -444,6 +444,81 @@ func TestReconcile_CorruptedCreds_SkippedSilently(t *testing.T) {
 	}
 }
 
+// Promotion from live clears a stale NeedsReauth flag (#4).
+func TestReconcile_PromotionClearsNeedsReauth(t *testing.T) {
+	p := makeEnv(t)
+	s := profile.NewStore()
+	s.Profiles["bala"] = sampleProfile("bala", "bala@x.com")
+	s.Profiles["bala"].NeedsReauth = true
+	_ = s.SetActive("bala")
+
+	// Profile creds: stale (triggered the original invalid_grant).
+	profileCreds := filepath.Join(p.ProfilesRoot, "bala", "credentials.json")
+	writeCreds(t, profileCreds, "stale_access", "stale_refresh", -1)
+
+	// Live creds: fresh (user re-authenticated via claude /login).
+	writeClaudeJSON(t, p.ClaudeJSONPath, "bala@x.com", "org-bala")
+	liveCreds := filepath.Join(p.ClaudeConfigHome, ".credentials.json")
+	writeCreds(t, liveCreds, "fresh_access", "fresh_refresh", 1)
+
+	rep, err := Reconcile(s, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.TokensPromoted) != 1 {
+		t.Fatalf("TokensPromoted = %v, want [bala]", rep.TokensPromoted)
+	}
+	if s.Profiles["bala"].NeedsReauth {
+		t.Error("NeedsReauth should be cleared after promotion from live")
+	}
+}
+
+// Promotion from isolate also clears NeedsReauth (#4).
+func TestReconcile_IsolatePromotionClearsNeedsReauth(t *testing.T) {
+	p := makeEnv(t)
+	s := profile.NewStore()
+	s.Profiles["work"] = sampleProfile("work", "a@x.com")
+	s.Profiles["work"].NeedsReauth = true
+	s.Profiles["work"].Location = profile.LocationIsolated
+
+	profileCreds := filepath.Join(p.ProfilesRoot, "work", "credentials.json")
+	writeCreds(t, profileCreds, "stale", "stale_r", -1)
+
+	isolateCreds := filepath.Join(p.IsolatesRoot, "work", ".credentials.json")
+	writeCreds(t, isolateCreds, "isolate_fresh", "isolate_fresh_r", 2)
+
+	rep, err := Reconcile(s, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.TokensPromoted) != 1 {
+		t.Fatalf("TokensPromoted = %v, want [work]", rep.TokensPromoted)
+	}
+	if s.Profiles["work"].NeedsReauth {
+		t.Error("NeedsReauth should be cleared after promotion from isolate")
+	}
+}
+
+// No promotion → NeedsReauth stays true (no false clearing).
+func TestReconcile_NoPromotion_NeedsReauthPreserved(t *testing.T) {
+	p := makeEnv(t)
+	s := profile.NewStore()
+	s.Profiles["work"] = sampleProfile("work", "a@x.com")
+	s.Profiles["work"].NeedsReauth = true
+
+	// Profile creds are the freshest — no promotion happens.
+	profileCreds := filepath.Join(p.ProfilesRoot, "work", "credentials.json")
+	writeCreds(t, profileCreds, "fresh", "fresh_r", 2)
+
+	_, err := Reconcile(s, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Profiles["work"].NeedsReauth {
+		t.Error("NeedsReauth should NOT be cleared when no promotion happened")
+	}
+}
+
 // contains is a small substring check to avoid importing strings for one call.
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {

@@ -53,6 +53,9 @@ func freshAccessToken(name string, store *profile.Store, storePath string) (stri
 
 	// If the access token is still valid, use it directly — no refresh needed.
 	if !parsedCreds.ExpiresAt.IsZero() && time.Now().Before(parsedCreds.ExpiresAt) {
+		if store.Profiles[name].NeedsReauth {
+			store.Profiles[name].NeedsReauth = false
+		}
 		return parsedCreds.AccessToken, false, nil
 	}
 
