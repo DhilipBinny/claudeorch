@@ -55,6 +55,7 @@ func freshAccessToken(name string, store *profile.Store, storePath string) (stri
 	if !parsedCreds.ExpiresAt.IsZero() && time.Now().Before(parsedCreds.ExpiresAt) {
 		if store.Profiles[name].NeedsReauth {
 			store.Profiles[name].NeedsReauth = false
+			return parsedCreds.AccessToken, true, nil
 		}
 		return parsedCreds.AccessToken, false, nil
 	}
