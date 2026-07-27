@@ -15,6 +15,15 @@ import (
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 )
 
+// MemoryMode controls how memory files are handled during migration.
+type MemoryMode string
+
+const (
+	MemoryNone MemoryMode = ""
+	MemoryCopy MemoryMode = "copy"
+	MemoryMove MemoryMode = "move"
+)
+
 // ActionKind describes what a planned action does.
 type ActionKind int
 
@@ -25,6 +34,9 @@ const (
 	ActionUpdateSourceIndex
 	ActionUpdateTargetIndex
 	ActionUpdateHistory
+	ActionCopyMemory
+	ActionMoveMemory
+	ActionUpdateMemoryIndex
 )
 
 // Action is a planned step in a migration.
@@ -37,10 +49,11 @@ type Action struct {
 
 // MigrateOptions configures a migration.
 type MigrateOptions struct {
-	SourceDir string
-	TargetDir string
-	SessionID string // optional — empty means most recent
-	DryRun    bool
+	SourceDir  string
+	TargetDir  string
+	SessionID  string // optional — empty means most recent
+	DryRun     bool
+	MemoryMode MemoryMode
 }
 
 // MigrateResult summarizes what happened.
@@ -212,6 +225,44 @@ func Plan(opts MigrateOptions) ([]Action, *SessionInfo, error) {
 		Desc: "Rewrite project references in history.jsonl",
 	})
 
+	memFiles, _ := DiscoverMemoryFiles(sourceProject, sid)
+	if len(memFiles) > 0 {
+		if opts.MemoryMode == MemoryCopy || opts.MemoryMode == MemoryMove {
+			verb := "Copy"
+			kind := ActionCopyMemory
+			if opts.MemoryMode == MemoryMove {
+				verb = "Move"
+				kind = ActionMoveMemory
+			}
+			for _, mf := range memFiles {
+				actions = append(actions, Action{
+					Kind: kind,
+					Desc: fmt.Sprintf("%s memory file: %s", verb, mf.Filename),
+				})
+			}
+			actions = append(actions, Action{
+				Kind: ActionUpdateMemoryIndex,
+				Desc: "Update MEMORY.md indexes (source and target)",
+			})
+			if broken := BrokenCrossRefs(memFiles); len(broken) > 0 {
+				actions = append(actions, Action{
+					Kind: ActionNote,
+					Desc: fmt.Sprintf("Warning: cross-references to unmigrated memories: %s", strings.Join(broken, ", ")),
+				})
+			}
+		} else {
+			names := make([]string, 0, len(memFiles))
+			for _, mf := range memFiles {
+				names = append(names, mf.Filename)
+			}
+			actions = append(actions, Action{
+				Kind: ActionNote,
+				Desc: fmt.Sprintf("%d memory file(s) reference this session: %s — use --with-memory to include them",
+					len(memFiles), strings.Join(names, ", ")),
+			})
+		}
+	}
+
 	return actions, session, nil
 }
 
@@ -343,6 +394,60 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 				return nil, fmt.Errorf("migrate: rewrite history: %w", err)
 			}
 			result.Actions = append(result.Actions, fmt.Sprintf("[updated] Rewrote %d history.jsonl entries", updated))
+
+		case ActionCopyMemory, ActionMoveMemory:
+			// Handled in batch after all actions — see below.
+
+		case ActionUpdateMemoryIndex:
+			// Handled in batch after all actions — see below.
+		}
+	}
+
+	if opts.MemoryMode == MemoryCopy || opts.MemoryMode == MemoryMove {
+		memFiles, err := DiscoverMemoryFiles(sourceProject, sid)
+		if err != nil {
+			return nil, fmt.Errorf("migrate: discover memory files: %w", err)
+		}
+		if len(memFiles) > 0 {
+			sourceMemIndex := filepath.Join(sourceProject, "memory", "MEMORY.md")
+			if err := BackupFile(backupDir, sourceMemIndex, "source-MEMORY.md.bak"); err != nil {
+				return nil, fmt.Errorf("migrate: backup source MEMORY.md: %w", err)
+			}
+			targetMemIndex := filepath.Join(targetProject, "memory", "MEMORY.md")
+			if err := BackupFile(backupDir, targetMemIndex, "target-MEMORY.md.bak"); err != nil {
+				return nil, fmt.Errorf("migrate: backup target MEMORY.md: %w", err)
+			}
+
+			var skipped []string
+			if opts.MemoryMode == MemoryMove {
+				skipped, err = MoveMemoryFiles(sourceProject, targetProject, memFiles)
+			} else {
+				skipped, err = CopyMemoryFiles(sourceProject, targetProject, memFiles)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("migrate: %s memory files: %w", opts.MemoryMode, err)
+			}
+			verb := "copied"
+			if opts.MemoryMode == MemoryMove {
+				verb = "moved"
+			}
+			result.Actions = append(result.Actions,
+				fmt.Sprintf("[%s] %d memory file(s)", verb, len(memFiles)-len(skipped)))
+			for _, s := range skipped {
+				result.Actions = append(result.Actions,
+					fmt.Sprintf("[skipped] %s (already exists in target)", s))
+			}
+
+			removeFromSource := opts.MemoryMode == MemoryMove
+			if err := UpdateMemoryIndex(sourceProject, targetProject, memFiles, removeFromSource); err != nil {
+				return nil, fmt.Errorf("migrate: update memory indexes: %w", err)
+			}
+			result.Actions = append(result.Actions, "[updated] MEMORY.md indexes")
+
+			if broken := BrokenCrossRefs(memFiles); len(broken) > 0 {
+				result.Actions = append(result.Actions,
+					fmt.Sprintf("[warning] Cross-references to unmigrated memories: %s", strings.Join(broken, ", ")))
+			}
 		}
 	}
 
