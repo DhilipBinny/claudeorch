@@ -111,10 +111,11 @@ func runSessionList(cmd *cobra.Command, dir string) error {
 
 func newSessionMigrateCmd() *cobra.Command {
 	var (
-		sourceDir string
-		targetDir string
-		sessionID string
-		dryRun    bool
+		sourceDir  string
+		targetDir  string
+		sessionID  string
+		dryRun     bool
+		withMemory string
 	)
 	cmd := &cobra.Command{
 		Use:   "migrate",
@@ -126,23 +127,48 @@ with all 'cwd' fields rewritten to the new directory. Session indexes and
 history.jsonl are updated accordingly.
 
 The --session flag accepts a full session ID, an ID prefix, or a
-case-insensitive substring of the session name/summary.`,
+case-insensitive substring of the session name/summary.
+
+Use --with-memory to include memory files that were created by the session:
+  --with-memory copy   Copy memory files to target (source keeps originals)
+  --with-memory move   Move memory files to target (removed from source)
+
+Memory files are matched by their frontmatter originSessionId field.
+MEMORY.md indexes are updated in both source and target.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSessionMigrate(cmd, sourceDir, targetDir, sessionID, dryRun)
+			memMode, err := parseMemoryMode(withMemory)
+			if err != nil {
+				return err
+			}
+			return runSessionMigrate(cmd, sourceDir, targetDir, sessionID, dryRun, memMode)
 		},
 	}
 	cmd.Flags().StringVar(&sourceDir, "from", "", "source project directory (required)")
 	cmd.Flags().StringVar(&targetDir, "to", "", "target project directory (required)")
 	cmd.Flags().StringVar(&sessionID, "session", "", "session ID, ID prefix, or name substring (default: most recent)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be done without doing it")
+	cmd.Flags().StringVar(&withMemory, "with-memory", "", "migrate memory files: 'copy' or 'move'")
 	_ = cmd.MarkFlagRequired("from")
 	_ = cmd.MarkFlagRequired("to")
 	return cmd
 }
 
-func runSessionMigrate(cmd *cobra.Command, sourceDir, targetDir, sessionID string, dryRun bool) error {
+func parseMemoryMode(s string) (migrate.MemoryMode, error) {
+	switch s {
+	case "":
+		return migrate.MemoryNone, nil
+	case "copy":
+		return migrate.MemoryCopy, nil
+	case "move":
+		return migrate.MemoryMove, nil
+	default:
+		return "", fmt.Errorf("invalid --with-memory value %q: must be 'copy' or 'move'", s)
+	}
+}
+
+func runSessionMigrate(cmd *cobra.Command, sourceDir, targetDir, sessionID string, dryRun bool, memMode migrate.MemoryMode) error {
 	ui.Init(NoColor())
 
 	absSource, err := filepath.Abs(sourceDir)
@@ -165,10 +191,11 @@ func runSessionMigrate(cmd *cobra.Command, sourceDir, targetDir, sessionID strin
 	}
 
 	opts := migrate.MigrateOptions{
-		SourceDir: absSource,
-		TargetDir: absTarget,
-		SessionID: sessionID,
-		DryRun:    dryRun,
+		SourceDir:  absSource,
+		TargetDir:  absTarget,
+		SessionID:  sessionID,
+		DryRun:     dryRun,
+		MemoryMode: memMode,
 	}
 
 	out := cmd.OutOrStdout()
