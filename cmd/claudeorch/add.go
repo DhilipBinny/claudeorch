@@ -93,20 +93,20 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	var credsData []byte
 	var credType schema.CredentialType
 
-	oauthData, oauthErr := creds.ReadLive(credsPath)
-	if oauthErr == nil {
-		if _, parseErr := schema.ParseCredentials(oauthData); parseErr == nil {
-			credsData = oauthData
-			credType = schema.CredentialOAuth
+	liveData, liveErr := creds.ReadLive(credsPath)
+	if liveErr == nil {
+		if parsed, parseErr := schema.ParseCredentials(liveData); parseErr == nil {
+			credsData = liveData
+			credType = parsed.Type
 		}
 	}
 
 	if credsData == nil {
-		// OAuth credentials not found or invalid — try API key from Keychain.
+		// Credentials file not found or invalid — try API key from Keychain (macOS).
 		apiKey, keyErr := creds.ReadLiveAPIKey()
 		if keyErr != nil {
-			if oauthErr != nil {
-				return fmt.Errorf("no credentials found:\n  OAuth: %v\n  API key: %v", oauthErr, keyErr)
+			if liveErr != nil {
+				return fmt.Errorf("no credentials found:\n  OAuth: %v\n  API key: %v", liveErr, keyErr)
 			}
 			return fmt.Errorf("no valid credentials found:\n  OAuth: credentials present but invalid\n  API key: %v", keyErr)
 		}

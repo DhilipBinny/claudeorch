@@ -3,8 +3,11 @@
 package creds
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 )
@@ -35,17 +38,43 @@ func IsKeychainBased() bool {
 	return false
 }
 
-// ReadLiveAPIKey reads the API key from the filesystem.
-// On Linux, there's no standard location for Claude Code API keys.
-// Returns an error directing the user to provide the key manually.
-func ReadLiveAPIKey() (string, error) {
-	return "", fmt.Errorf("API key detection not yet supported on Linux — use 'claudeorch add --api-key <key>'")
+// credentialsPath returns the default credentials file path on Linux.
+func credentialsPath() string {
+	home := os.Getenv("HOME")
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return filepath.Join(dir, ".credentials.json")
+	}
+	return filepath.Join(home, ".claude", ".credentials.json")
 }
 
-// WriteLiveAPIKey writes the API key to the live location.
-// On Linux, API key auth is not yet fully supported.
+// ReadLiveAPIKey reads the API key from the credentials flat file on Linux.
+// Claude Code on Linux stores API keys in ~/.claude/.credentials.json as
+// {"apiKey": "sk-ant-..."}.
+func ReadLiveAPIKey() (string, error) {
+	data, err := os.ReadFile(credentialsPath())
+	if err != nil {
+		return "", fmt.Errorf("read credentials: %w", err)
+	}
+	var envelope struct {
+		APIKey string `json:"apiKey"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return "", fmt.Errorf("parse credentials: %w", err)
+	}
+	key := strings.TrimSpace(envelope.APIKey)
+	if key == "" {
+		return "", fmt.Errorf("no apiKey found in credentials file")
+	}
+	return key, nil
+}
+
+// WriteLiveAPIKey writes the API key to the credentials flat file on Linux.
 func WriteLiveAPIKey(apiKey string) error {
-	return fmt.Errorf("API key write not yet supported on Linux")
+	blob, err := json.Marshal(map[string]string{"apiKey": apiKey})
+	if err != nil {
+		return fmt.Errorf("marshal API key: %w", err)
+	}
+	return fsio.WriteFileAtomic(credentialsPath(), blob, 0o600)
 }
 
 // DeleteLiveCredentials is a no-op on Linux (no Keychain to clear).
