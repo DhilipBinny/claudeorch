@@ -51,6 +51,11 @@ func freshAccessToken(name string, store *profile.Store, storePath string) (stri
 		return "", false, fmt.Errorf("parse credentials for %q: %w", name, err)
 	}
 
+	// API key profiles: the key itself is the token, no refresh needed.
+	if parsedCreds.Type == schema.CredentialAPIKey {
+		return parsedCreds.APIKey, false, nil
+	}
+
 	// If the access token is still valid, use it directly — no refresh needed.
 	if !parsedCreds.ExpiresAt.IsZero() && time.Now().Before(parsedCreds.ExpiresAt) {
 		if store.Profiles[name].NeedsReauth {

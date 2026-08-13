@@ -34,3 +34,26 @@ func WriteLive(credsPath string, data []byte) error {
 func IsKeychainBased() bool {
 	return false
 }
+
+// ReadLiveAPIKey reads the API key from the filesystem.
+// On Linux, there's no standard location for Claude Code API keys.
+// Returns an error directing the user to provide the key manually.
+func ReadLiveAPIKey() (string, error) {
+	return "", fmt.Errorf("API key detection not yet supported on Linux — use 'claudeorch add --api-key <key>'")
+}
+
+// WriteLiveAPIKey writes the API key to the live location.
+// On Linux, API key auth is not yet fully supported.
+func WriteLiveAPIKey(apiKey string) error {
+	return fmt.Errorf("API key write not yet supported on Linux")
+}
+
+// DeleteLiveCredentials is a no-op on Linux (no Keychain to clear).
+func DeleteLiveCredentials() error {
+	return nil
+}
+
+// DeleteLiveAPIKey is a no-op on Linux (no Keychain to clear).
+func DeleteLiveAPIKey() error {
+	return nil
+}

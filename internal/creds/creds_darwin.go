@@ -21,6 +21,11 @@ import (
 // or "claude" — all of which we tested and got empty results for.
 const keychainService = "Claude Code-credentials"
 
+// keychainAPIKeyService is the Keychain service name where Claude Code
+// stores an API key (sk-ant-...) for API-key-based authentication.
+// The value is a raw string, not JSON.
+const keychainAPIKeyService = "Claude Code"
+
 // keychainDisabled reports whether the Keychain must not be touched,
 // forcing flat-file mode on macOS. True in two cases:
 //
@@ -162,6 +167,103 @@ func writeKeychain(data []byte) error {
 			errMsg = err.Error()
 		}
 		return fmt.Errorf("keychain write: %s", errMsg)
+	}
+	return nil
+}
+
+// ReadLiveAPIKey reads the API key from the macOS Keychain.
+// Returns the raw key string (e.g., "sk-ant-...") or an error.
+func ReadLiveAPIKey() (string, error) {
+	if keychainDisabled() {
+		return "", fmt.Errorf("keychain disabled (test or CLAUDEORCH_NO_KEYCHAIN)")
+	}
+	cmd := exec.Command("security", "find-generic-password",
+		"-s", keychainAPIKeyService,
+		"-a", currentUsername(),
+		"-w",
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return "", fmt.Errorf("keychain read API key: %s", errMsg)
+	}
+	key := strings.TrimSpace(stdout.String())
+	if key == "" {
+		return "", fmt.Errorf("keychain API key entry is empty")
+	}
+	return key, nil
+}
+
+// DeleteLiveCredentials removes the OAuth credentials entry from the macOS
+// Keychain. Used when swapping TO an API key profile so the daemon doesn't
+// find stale OAuth tokens and ignore the API key.
+func DeleteLiveCredentials() error {
+	if keychainDisabled() {
+		return nil
+	}
+	cmd := exec.Command("security", "delete-generic-password",
+		"-s", keychainService,
+		"-a", currentUsername(),
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if strings.Contains(errMsg, "could not be found") || strings.Contains(errMsg, "SecKeychainSearchCopyNext") {
+			return nil
+		}
+		return fmt.Errorf("keychain delete credentials: %s", errMsg)
+	}
+	return nil
+}
+
+// DeleteLiveAPIKey removes the API key entry from the macOS Keychain.
+// Used when swapping FROM an API key profile to OAuth so Claude Code
+// doesn't see a stale API key.
+func DeleteLiveAPIKey() error {
+	if keychainDisabled() {
+		return nil
+	}
+	cmd := exec.Command("security", "delete-generic-password",
+		"-s", keychainAPIKeyService,
+		"-a", currentUsername(),
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if strings.Contains(errMsg, "could not be found") || strings.Contains(errMsg, "SecKeychainSearchCopyNext") {
+			return nil
+		}
+		return fmt.Errorf("keychain delete API key: %s", errMsg)
+	}
+	return nil
+}
+
+// WriteLiveAPIKey writes (or updates) the API key in the macOS Keychain.
+func WriteLiveAPIKey(apiKey string) error {
+	if keychainDisabled() {
+		return fmt.Errorf("keychain disabled (test or CLAUDEORCH_NO_KEYCHAIN)")
+	}
+	cmd := exec.Command("security", "add-generic-password",
+		"-U",
+		"-s", keychainAPIKeyService,
+		"-a", currentUsername(),
+		"-w", apiKey,
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return fmt.Errorf("keychain write API key: %s", errMsg)
 	}
 	return nil
 }
