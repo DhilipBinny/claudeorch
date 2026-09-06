@@ -236,6 +236,10 @@ func checkStaleSessions(configDir string, fix bool) checkResult {
 }
 
 func checkTokenExpiry(name string, p *profile.Profile) checkResult {
+	// API key profiles have no expiring tokens.
+	if p.Source == profile.SourceAPIKey {
+		return checkResult{name: "token " + name + " (API key)", ok: true}
+	}
 	dir, err := paths.ProfileDir(name)
 	if err != nil {
 		return checkResult{name: "token " + name, ok: false, message: err.Error()}
@@ -268,6 +272,10 @@ func checkTokenExpiry(name string, p *profile.Profile) checkResult {
 const driftThreshold = 24 * time.Hour
 
 func checkProfileDrift(name string, p *profile.Profile) checkResult {
+	// API key profiles don't drift — the key is static.
+	if p.Source == profile.SourceAPIKey {
+		return checkResult{name: "drift " + name + " (API key)", ok: true}
+	}
 	// TokensLastSeenAt is only populated by reconcile. Zero = never
 	// reconciled, which happens on a fresh store or a v1-migrated store
 	// that hasn't had any mutating command run yet. Don't flag — the

@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 
 	"github.com/DhilipBinny/claudeorch/internal/creds"
+	"github.com/DhilipBinny/claudeorch/internal/schema"
 )
 
 // Run performs a full swap of the live Claude credentials to the given profile.
@@ -46,14 +47,24 @@ func Run(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) er
 func runKeychainSwap(profileDir, claudeConfigHome, claudeJSONPath string) error {
 	slog.Debug("swap: starting (keychain mode)", "profile_dir", profileDir)
 
-	// Read the incoming profile's credentials.
+	// Read the incoming profile's credentials to determine type.
 	srcCreds := filepath.Join(profileDir, "credentials.json")
 	newCredsData, err := os.ReadFile(srcCreds)
 	if err != nil {
 		return fmt.Errorf("swap: read profile credentials: %w", err)
 	}
 
+	parsed, parseErr := schema.ParseCredentials(newCredsData)
+	if parseErr != nil {
+		return fmt.Errorf("swap: parse profile credentials: %w", parseErr)
+	}
+
 	srcClaude := filepath.Join(profileDir, "claude.json")
+
+	if parsed.Type == schema.CredentialAPIKey {
+		return runKeychainAPIKeySwap(parsed.APIKey, srcClaude, claudeConfigHome, claudeJSONPath)
+	}
+
 	liveCreds := filepath.Join(claudeConfigHome, ".credentials.json")
 
 	// Backup current Keychain state so we can rollback if .claude.json
@@ -65,6 +76,11 @@ func runKeychainSwap(profileDir, claudeConfigHome, claudeJSONPath string) error 
 	slog.Debug("swap: writing new credentials to keychain")
 	if err := creds.WriteLive(liveCreds, newCredsData); err != nil {
 		return fmt.Errorf("swap: write credentials to keychain: %w", err)
+	}
+
+	// Clear API key entry so Claude Code uses OAuth, not a stale API key.
+	if err := creds.DeleteLiveAPIKey(); err != nil {
+		slog.Warn("swap: failed to clear API key keychain (non-fatal)", "err", err)
 	}
 
 	// CommitB: rename .claude.json.
@@ -93,6 +109,62 @@ func runKeychainSwap(profileDir, claudeConfigHome, claudeJSONPath string) error 
 	// Cleanup.
 	_ = os.Remove(backupClaude)
 	slog.Debug("swap: complete (keychain mode)")
+	return nil
+}
+
+// runKeychainAPIKeySwap handles swapping an API-key-based profile on macOS.
+// The API key lives in the "Claude Code" Keychain entry (not "Claude Code-credentials").
+func runKeychainAPIKeySwap(apiKey, srcClaude, claudeConfigHome, claudeJSONPath string) error {
+	slog.Debug("swap: starting (keychain API key mode)")
+
+	// Backup current API key.
+	backupKey, _ := creds.ReadLiveAPIKey()
+
+	// Backup current OAuth credentials — we need to clear them so the daemon
+	// doesn't find stale OAuth tokens and ignore the API key.
+	liveCreds := filepath.Join(claudeConfigHome, ".credentials.json")
+	backupOAuth, _ := creds.ReadLive(liveCreds)
+
+	// CommitA: write API key to Keychain.
+	if err := creds.WriteLiveAPIKey(apiKey); err != nil {
+		return fmt.Errorf("swap: write API key to keychain: %w", err)
+	}
+
+	// Clear OAuth credentials so daemon uses the API key, not stale OAuth.
+	if err := creds.DeleteLiveCredentials(); err != nil {
+		slog.Warn("swap: failed to clear OAuth keychain (non-fatal)", "err", err)
+	}
+	_ = os.Remove(liveCreds)
+
+	// CommitB: rename .claude.json.
+	backupClaude := claudeJSONPath + ".pre-swap"
+	if _, err := os.Stat(claudeJSONPath); err == nil {
+		if err := os.Rename(claudeJSONPath, backupClaude); err != nil {
+			if backupKey != "" {
+				_ = creds.WriteLiveAPIKey(backupKey)
+			}
+			if backupOAuth != nil {
+				_ = creds.WriteLive(liveCreds, backupOAuth)
+			}
+			return fmt.Errorf("swap: backup .claude.json: %w", err)
+		}
+	}
+	slog.Debug("swap: renaming .claude.json")
+	if err := copyFile(srcClaude, claudeJSONPath, 0o600); err != nil {
+		if _, statErr := os.Stat(backupClaude); statErr == nil {
+			_ = os.Rename(backupClaude, claudeJSONPath)
+		}
+		if backupKey != "" {
+			_ = creds.WriteLiveAPIKey(backupKey)
+		}
+		if backupOAuth != nil {
+			_ = creds.WriteLive(liveCreds, backupOAuth)
+		}
+		return fmt.Errorf("swap: write .claude.json: %w", err)
+	}
+
+	_ = os.Remove(backupClaude)
+	slog.Debug("swap: complete (keychain API key mode)")
 	return nil
 }
 

@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/DhilipBinny/claudeorch/internal/creds"
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
@@ -182,6 +183,18 @@ func Reconcile(store *profile.Store, p Paths) (Report, error) {
 // reconcileOne handles a single profile's candidates + location state.
 func reconcileOne(prof *profile.Profile, store *profile.Store, p Paths,
 	liveIdentity *schema.Identity, rep *Report) error {
+
+	// API key profiles don't have rotating tokens — skip freshness sync
+	// but still do orphan-isolate cleanup.
+	if prof.Source == profile.SourceAPIKey {
+		if prof.Location == profile.LocationIsolated {
+			if !isolateHasLiveOwner(filepath.Join(p.IsolatesRoot, prof.Name)) {
+				prof.Location = profile.LocationDormant
+				rep.OrphansCleared = append(rep.OrphansCleared, prof.Name)
+			}
+		}
+		return nil
+	}
 
 	profileCredsPath := filepath.Join(p.ProfilesRoot, prof.Name, "credentials.json")
 	isolateCredsPath := filepath.Join(p.IsolatesRoot, prof.Name, ".credentials.json")
@@ -402,16 +415,38 @@ func writeCredsRaw(data []byte, dst string) error {
 	return fsio.WriteFileAtomic(dst, data, 0o600)
 }
 
-// isolateHasLiveOwner reports whether any running process has its
-// CLAUDE_CONFIG_DIR set to isolateDir. Checks /proc/*/environ on Linux;
-// returns true on macOS (where we can't read other processes' env) to
-// avoid false-positive orphan reports.
+// isolateHasLiveOwner reports whether any running process owns the
+// given isolate directory. Uses two strategies:
+//  1. Check the isolate's sessions/ dir for session files with alive PIDs
+//     (works on all platforms).
+//  2. On Linux, also scan /proc/*/environ for CLAUDE_CONFIG_DIR matches
+//     as a fallback.
 func isolateHasLiveOwner(isolateDir string) bool {
-	// List all process PIDs and inspect their CLAUDE_CONFIG_DIR.
+	// Strategy 1: check session files inside the isolate. Each session
+	// file is <pid>.json — if the process is alive, the isolate is owned.
+	sessDir := filepath.Join(isolateDir, "sessions")
+	sessEntries, err := os.ReadDir(sessDir)
+	if err == nil {
+		for _, e := range sessEntries {
+			name := e.Name()
+			if len(name) < 6 || name[len(name)-5:] != ".json" {
+				continue
+			}
+			pid := atoiOrZero(name[:len(name)-5])
+			if pid > 0 && processAlive(pid) {
+				return true
+			}
+		}
+		// Session dir exists and was readable — if no alive PIDs found,
+		// the isolate is orphaned.
+		return false
+	}
+
+	// Strategy 2 (Linux): scan /proc for CLAUDE_CONFIG_DIR matches.
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		// Not Linux (or /proc unreadable) — be conservative: assume owned,
-		// so we don't wrongly mark isolates as orphaned.
+		// No session dir AND no /proc — can't determine ownership.
+		// Be conservative on unknown platforms.
 		return true
 	}
 	target := filepath.Clean(isolateDir)
@@ -432,6 +467,18 @@ func isolateHasLiveOwner(isolateDir string) bool {
 		}
 	}
 	return false
+}
+
+// processAlive checks if a process with the given PID is still running.
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// Signal 0 doesn't actually send a signal — just checks if the
+	// process exists and we have permission to signal it.
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil
 }
 
 func atoiOrZero(s string) int {

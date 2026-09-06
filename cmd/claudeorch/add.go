@@ -84,17 +84,38 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read %s: %w", claudeJSONPath, err)
 	}
 
-	credsData, err := creds.ReadLive(credsPath)
-	if err != nil {
-		return err
-	}
-
 	identity, err := schema.ExtractIdentity(claudeJSONData)
 	if err != nil {
 		return fmt.Errorf("parse .claude.json: %w", err)
 	}
-	if _, err := schema.ParseCredentials(credsData); err != nil {
-		return fmt.Errorf("parse .credentials.json: %w", err)
+
+	// Detect credential type: try OAuth credentials first, then API key.
+	var credsData []byte
+	var credType schema.CredentialType
+
+	liveData, liveErr := creds.ReadLive(credsPath)
+	if liveErr == nil {
+		if parsed, parseErr := schema.ParseCredentials(liveData); parseErr == nil {
+			credsData = liveData
+			credType = parsed.Type
+		}
+	}
+
+	if credsData == nil {
+		// Credentials file not found or invalid — try API key from Keychain (macOS).
+		apiKey, keyErr := creds.ReadLiveAPIKey()
+		if keyErr != nil {
+			if liveErr != nil {
+				return fmt.Errorf("no credentials found:\n  OAuth: %v\n  API key: %v", liveErr, keyErr)
+			}
+			return fmt.Errorf("no valid credentials found:\n  OAuth: credentials present but invalid\n  API key: %v", keyErr)
+		}
+		blob, blobErr := schema.MakeAPIKeyCredentialBlob(apiKey)
+		if blobErr != nil {
+			return fmt.Errorf("marshal API key: %w", blobErr)
+		}
+		credsData = blob
+		credType = schema.CredentialAPIKey
 	}
 
 	// Acquire global lock.
@@ -217,13 +238,17 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Register in store.
+	source := profile.SourceOAuth
+	if credType == schema.CredentialAPIKey {
+		source = profile.SourceAPIKey
+	}
 	store.Profiles[name] = &profile.Profile{
 		Name:             name,
 		Email:            identity.EmailAddress,
 		OrganizationUUID: identity.OrganizationUUID,
 		OrganizationName: identity.OrganizationName,
 		CreatedAt:        time.Now().UTC(),
-		Source:           profile.SourceOAuth,
+		Source:           source,
 	}
 	// The credentials we just copied came from live ~/.claude/, so this new
 	// profile IS the live account. Mark it active so 'status' and 'list'
