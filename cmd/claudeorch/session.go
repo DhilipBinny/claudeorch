@@ -220,6 +220,7 @@ func runSessionMigrate(cmd *cobra.Command, sourceDir, targetDir, sessionID strin
 		for _, a := range actions {
 			fmt.Fprintf(out, "  %s\n", a.Desc)
 		}
+		printPlannedAutoPrune(out)
 		fmt.Fprintf(out, "\nRe-run without --dry-run to execute.\n\n")
 		return nil
 	}
@@ -240,45 +241,6 @@ func runSessionMigrate(cmd *cobra.Command, sourceDir, targetDir, sessionID strin
 
 	fmt.Fprintf(out, "\nMigration complete!\n")
 	fmt.Fprintf(out, "Run 'claude' in %s and use /resume to continue this session.\n\n", absTarget)
-	return nil
-}
-
-func newSessionBackupsCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:           "backups",
-		Short:         "List migration backups.",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSessionBackups(cmd)
-		},
-	}
-}
-
-func runSessionBackups(cmd *cobra.Command) error {
-	backups, err := migrate.ListBackups()
-	if err != nil {
-		return err
-	}
-
-	out := cmd.OutOrStdout()
-
-	if len(backups) == 0 {
-		fmt.Fprintln(out, "No migration backups found.")
-		return nil
-	}
-
-	fmt.Fprintf(out, "\nMigration backups:\n")
-	fmt.Fprintf(out, "%s\n", dashLine(60))
-	for _, b := range backups {
-		ts := "?"
-		if !b.Timestamp.IsZero() {
-			ts = b.Timestamp.Format("2006-01-02 15:04:05")
-		}
-		fmt.Fprintf(out, "  %s\n", b.Name)
-		fmt.Fprintf(out, "    Date: %s  |  Files: %d\n", ts, b.FileCount)
-	}
-	fmt.Fprintln(out)
 	return nil
 }
 

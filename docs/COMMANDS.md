@@ -93,6 +93,28 @@ Refuses to refresh the active profile unless `--force` (the rotation invalidates
 - `invalid_grant` (refresh token expired or revoked) → marks `needs_reauth: true` on the profile, exits 1, instructs the user to `claude /login` and re-add.
 - 5xx / network → returns a wrapped `ErrNetwork`.
 
+## Session backups
+
+`claudeorch session migrate` writes a backup to `~/.claude/backups/migration-<session>-<unix-ts>/` before changing anything. Each one holds pre-migration copies of the session log, `history.jsonl`, session indexes and `MEMORY.md` files, so long sessions can make these large.
+
+**Automatic retention:** after every successful migration, backups older than 30 days are pruned, always keeping the 10 newest. A burst of recent migrations is never pruned until it ages out. `session migrate --dry-run` lists any backups this would delete.
+
+### `claudeorch session backups [list]`
+
+List migration backups, newest first, with date, file count and size.
+
+### `claudeorch session backups prune`
+
+Delete backups beyond the newest `--keep`. Shows the exact list first and only ever deletes what was shown.
+
+**Flags:**
+- `--keep N` — newest backups to always keep (default `10`; `0` allowed).
+- `--older-than-days N` — only prune backups older than N days (default `0` = no age limit, max `36500`).
+- `--dry-run` — show what would be deleted.
+- `--yes` — skip the confirmation prompt (required when stdin is not a terminal).
+
+A backup is renamed to `.pruning-<name>` before anything is overwritten, so an interrupted or failed removal never leaves a zeroed directory that still looks restorable; the next prune finishes it. Only `migration-*` directories are touched; Claude Code's own files in `~/.claude/backups/` are left alone. Backups with no parseable timestamp are never pruned. Files are zero-overwritten before deletion (hard-linked files are only unlinked). This is best-effort: copy-on-write filesystems (APFS, Btrfs, ZFS), SSDs and snapshots may retain the old data — full-disk encryption (FileVault, LUKS) is the reliable protection.
+
 ## Diagnostics
 
 ### `claudeorch doctor`
@@ -142,7 +164,7 @@ Wipe all `claudeorch` state:
 - Zero-overwrite every credential file under `~/.claudeorch/`
 - Remove the entire `~/.claudeorch/` directory
 
-`~/.claude/` is never touched. Requires interactive confirmation (`type "purge" to confirm`) unless `--force --yes` is given.
+`~/.claude/` is never touched (use `claudeorch session backups prune` for migration backups). Requires interactive confirmation (`type "purge" to confirm`) unless `--force --yes` is given.
 
 ### `claudeorch uninstall`
 
