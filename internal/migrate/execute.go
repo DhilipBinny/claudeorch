@@ -2,7 +2,6 @@ package migrate
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,9 +57,9 @@ type MigrateOptions struct {
 
 // MigrateResult summarizes what happened.
 type MigrateResult struct {
-	SessionID  string
-	BackupDir  string
-	Actions    []string
+	SessionID   string
+	BackupDir   string
+	Actions     []string
 	CwdRewrites int
 }
 
@@ -283,13 +282,9 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 		return nil, err
 	}
 
-	lockPath, err := paths.LockFile()
+	release, err := acquireLock()
 	if err != nil {
-		return nil, fmt.Errorf("migrate: resolve lock file: %w", err)
-	}
-	release, err := fsio.AcquireLock(context.Background(), lockPath)
-	if err != nil {
-		return nil, fmt.Errorf("migrate: acquire lock: %w", err)
+		return nil, err
 	}
 	defer release()
 
@@ -451,7 +446,26 @@ func Execute(opts MigrateOptions) (*MigrateResult, error) {
 		}
 	}
 
+	result.Actions = append(result.Actions, autoPruneBackups()...)
+
 	return result, nil
+}
+
+// autoPruneBackups applies the default retention policy after a successful
+// migration. The migration has already succeeded, so failures are reported
+// as warnings rather than errors. The caller must hold the claudeorch lock.
+func autoPruneBackups() []string {
+	removed, err := pruneBackupsLocked(autoPruneOptions(), nil)
+	var actions []string
+	if len(removed) > 0 {
+		actions = append(actions,
+			fmt.Sprintf("[pruned] %d migration backup(s) older than %d days (newest %d kept)",
+				len(removed), int(AutoPruneMinAge.Hours()/24), DefaultBackupKeep))
+	}
+	if err != nil {
+		actions = append(actions, fmt.Sprintf("[warning] backup retention: %v", err))
+	}
+	return actions
 }
 
 func moveJSONLWithRewrite(srcPath, dstPath, oldCwd, newCwd string) (int, error) {
