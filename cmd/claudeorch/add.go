@@ -93,22 +93,31 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	var credsData []byte
 	var credType schema.CredentialType
 
+	var liveParseErr error
 	liveData, liveErr := creds.ReadLive(credsPath)
 	if liveErr == nil {
-		if parsed, parseErr := schema.ParseCredentials(liveData); parseErr == nil {
+		var parsed *schema.Credentials
+		parsed, liveParseErr = schema.ParseCredentials(liveData)
+		if liveParseErr == nil {
 			credsData = liveData
 			credType = parsed.Type
 		}
 	}
 
 	if credsData == nil {
-		// Credentials file not found or invalid — try API key from Keychain (macOS).
+		// No usable OAuth credential — try an API key instead (keyring on
+		// macOS/Linux, flat file elsewhere).
 		apiKey, keyErr := creds.ReadLiveAPIKey()
 		if keyErr != nil {
 			if liveErr != nil {
 				return fmt.Errorf("no credentials found:\n  OAuth: %v\n  API key: %v", liveErr, keyErr)
 			}
-			return fmt.Errorf("no valid credentials found:\n  OAuth: credentials present but invalid\n  API key: %v", keyErr)
+			// The credential source was readable but held no Claude
+			// identity. Report the real parse failure: saying "present but
+			// invalid" hides whether the blob was malformed or simply
+			// belonged to something else (e.g. a file containing only
+			// mcpOAuth entries for MCP servers).
+			return fmt.Errorf("no valid credentials found:\n  OAuth: %v\n  API key: %v", liveParseErr, keyErr)
 		}
 		blob, blobErr := schema.MakeAPIKeyCredentialBlob(apiKey)
 		if blobErr != nil {

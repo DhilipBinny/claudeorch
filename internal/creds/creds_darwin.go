@@ -175,6 +175,12 @@ func writeKeychain(data []byte) error {
 // Returns the raw key string (e.g., "sk-ant-...") or an error.
 func ReadLiveAPIKey() (string, error) {
 	if keychainDisabled() {
+		// Still consult Claude Code's own state: an API key may come from
+		// ANTHROPIC_API_KEY or .claude.json's primaryApiKey, neither of
+		// which involves the Keychain.
+		if key, _, ok := liveAPIKeyFromClaudeState(); ok {
+			return key, nil
+		}
 		return "", fmt.Errorf("keychain disabled (test or CLAUDEORCH_NO_KEYCHAIN)")
 	}
 	cmd := exec.Command("security", "find-generic-password",
@@ -194,6 +200,9 @@ func ReadLiveAPIKey() (string, error) {
 	}
 	key := strings.TrimSpace(stdout.String())
 	if key == "" {
+		if fallback, _, ok := liveAPIKeyFromClaudeState(); ok {
+			return fallback, nil
+		}
 		return "", fmt.Errorf("keychain API key entry is empty")
 	}
 	return key, nil
