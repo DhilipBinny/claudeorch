@@ -13,13 +13,14 @@ import (
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 )
 
-
 // BackupInfo describes a migration backup directory.
 type BackupInfo struct {
 	Dir       string
 	Name      string
 	Timestamp time.Time
 	FileCount int
+	// Size is the total bytes of regular files in the backup.
+	Size int64
 }
 
 // CreateBackupDir creates a timestamped backup directory for a migration.
@@ -33,7 +34,7 @@ func CreateBackupDir(sessionID string) (string, error) {
 	if len(prefix) > 8 {
 		prefix = prefix[:8]
 	}
-	name := fmt.Sprintf("migration-%s-%d", prefix, time.Now().Unix())
+	name := fmt.Sprintf("%s%s-%d", backupDirPrefix, prefix, time.Now().Unix())
 	dir := filepath.Join(backupsDir, name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("migrate: create backup dir: %w", err)
@@ -90,7 +91,7 @@ func ListBackups() ([]BackupInfo, error) {
 
 	var backups []BackupInfo
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "migration-") {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), backupDirPrefix) {
 			continue
 		}
 		bi := BackupInfo{
@@ -103,15 +104,39 @@ func ListBackups() ([]BackupInfo, error) {
 				bi.Timestamp = time.Unix(ts, 0)
 			}
 		}
-		subEntries, _ := os.ReadDir(bi.Dir)
-		bi.FileCount = len(subEntries)
+		bi.FileCount, bi.Size = backupContents(bi.Dir)
 		backups = append(backups, bi)
 	}
 
+	// Name breaks timestamp ties so retention order is deterministic when
+	// several migrations land in the same second.
 	sort.Slice(backups, func(i, j int) bool {
-		return backups[i].Timestamp.After(backups[j].Timestamp)
+		if !backups[i].Timestamp.Equal(backups[j].Timestamp) {
+			return backups[i].Timestamp.After(backups[j].Timestamp)
+		}
+		return backups[i].Name > backups[j].Name
 	})
 	return backups, nil
+}
+
+// backupContents counts the entries in a backup dir and sums the sizes of
+// its regular files. Unreadable entries are skipped; this is display data.
+func backupContents(dir string) (count int, size int64) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, 0
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		size += info.Size()
+	}
+	return len(entries), size
 }
 
 // RestoreInfo lists the contents of a backup directory.
