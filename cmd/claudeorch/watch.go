@@ -157,9 +157,11 @@ func daemonize(cmd *cobra.Command, interval time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("start daemon: %w", err)
 	}
+	// Release resets proc.Pid to -1, so read it first.
+	pid := proc.Pid
 	_ = proc.Release()
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Watcher daemon started (pid %d, interval %s)\n", proc.Pid, interval)
+	fmt.Fprintf(cmd.OutOrStdout(), "Watcher daemon started (pid %d, interval %s)\n", pid, interval)
 	fmt.Fprintf(cmd.OutOrStdout(), "Check status: corch watch status\n")
 	fmt.Fprintf(cmd.OutOrStdout(), "Stop:         corch watch stop\n")
 	return nil
