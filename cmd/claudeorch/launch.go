@@ -275,6 +275,17 @@ func runLaunch(cmd *cobra.Command, isolated bool, cwd string, args []string) err
 		}
 	}
 
+	// If the isolate's own saved login already holds exactly this key, Claude
+	// Code authenticates with it by itself. Also passing it through
+	// ANTHROPIC_API_KEY only makes Claude Code print "ANTHROPIC_API_KEY
+	// overriding saved Console key". Drop the redundant variable, and clear any
+	// different key inherited from the shell so it cannot override the profile.
+	// When the saved key is absent or differs, the explicit override stays.
+	if apiKey != "" && launch.SavedAPIKeyMatches(isolateDir, apiKey) {
+		_ = os.Unsetenv("ANTHROPIC_API_KEY")
+		apiKey = ""
+	}
+
 	fmt.Fprintf(cmd.ErrOrStderr(), "Launching claude with profile %q (CLAUDE_CONFIG_DIR=%s)\n",
 		name, isolateDir)
 
