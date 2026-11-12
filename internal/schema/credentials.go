@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,11 @@ type Credentials struct {
 //  2. API key: JSON with "apiKey" containing the raw key string
 //     (e.g., "sk-ant-..."). Returns Type == CredentialAPIKey.
 //
+// If a blob contains BOTH formats (it can happen during a messy login
+// transition), the API key wins, matching Claude Code, where an API key takes
+// precedence over OAuth. A blank or whitespace-only "apiKey" does not count as
+// present, so the OAuth data is used instead.
+//
 // The blob must be ≤ maxFileSize and valid JSON.
 func ParseCredentials(data []byte) (*Credentials, error) {
 	if len(data) == 0 {
@@ -100,11 +106,11 @@ func ParseCredentials(data []byte) (*Credentials, error) {
 		return nil, fmt.Errorf("schema: credentials JSON parse error: %w", err)
 	}
 
-	// API key format.
-	if envelope.APIKey != "" {
+	// API key format. A key that is only whitespace is treated as absent.
+	if apiKey := strings.TrimSpace(envelope.APIKey); apiKey != "" {
 		return &Credentials{
 			Type:   CredentialAPIKey,
-			APIKey: envelope.APIKey,
+			APIKey: apiKey,
 			Raw:    data,
 		}, nil
 	}
@@ -136,6 +142,10 @@ func ParseCredentials(data []byte) (*Credentials, error) {
 // MakeAPIKeyCredentialBlob creates the JSON blob for storing an API key
 // in claudeorch's profile credentials.json format.
 func MakeAPIKeyCredentialBlob(apiKey string) ([]byte, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, errors.New("schema: API key is empty")
+	}
 	blob := map[string]string{"apiKey": apiKey}
 	return json.Marshal(blob)
 }

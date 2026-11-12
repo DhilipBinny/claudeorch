@@ -16,11 +16,13 @@
 package swap
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DhilipBinny/claudeorch/internal/creds"
 	"github.com/DhilipBinny/claudeorch/internal/schema"
@@ -112,6 +114,22 @@ func runKeychainSwap(profileDir, claudeConfigHome, claudeJSONPath string) error 
 	return nil
 }
 
+// fileHoldsAPIKey reports whether path is a credentials file containing a
+// non-empty "apiKey". Missing or unparseable files report false.
+func fileHoldsAPIKey(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var m struct {
+		APIKey string `json:"apiKey"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return false
+	}
+	return strings.TrimSpace(m.APIKey) != ""
+}
+
 // runKeychainAPIKeySwap handles swapping an API-key-based profile on macOS.
 // The API key lives in the "Claude Code" Keychain entry (not "Claude Code-credentials").
 func runKeychainAPIKeySwap(apiKey, srcClaude, claudeConfigHome, claudeJSONPath string) error {
@@ -134,7 +152,12 @@ func runKeychainAPIKeySwap(apiKey, srcClaude, claudeConfigHome, claudeJSONPath s
 	if err := creds.DeleteLiveCredentials(); err != nil {
 		slog.Warn("swap: failed to clear OAuth keychain (non-fatal)", "err", err)
 	}
-	_ = os.Remove(liveCreds)
+	// Drop a stale flat OAuth file, but not when that same file now holds the
+	// API key: on Linux the key lives in .credentials.json too, and
+	// DeleteLiveCredentials has already stripped the OAuth tokens from it.
+	if !fileHoldsAPIKey(liveCreds) {
+		_ = os.Remove(liveCreds)
+	}
 
 	// CommitB: rename .claude.json.
 	backupClaude := claudeJSONPath + ".pre-swap"

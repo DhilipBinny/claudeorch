@@ -17,6 +17,11 @@ import (
 	"github.com/DhilipBinny/claudeorch/internal/schema"
 )
 
+// errNoUsageForAPIKey is returned for API-key profiles. The usage endpoint
+// only accepts OAuth access tokens, so there is nothing to fetch, and the API
+// key must never be sent to it as a bearer token.
+var errNoUsageForAPIKey = errors.New("no usage data for API-key profiles")
+
 // freshAccessToken returns a valid access token for the named profile,
 // transparently refreshing if the stored one has expired. This is standard
 // OAuth 2.0 client behaviour — the caller never sees an expired token.
@@ -51,9 +56,10 @@ func freshAccessToken(name string, store *profile.Store, storePath string) (stri
 		return "", false, fmt.Errorf("parse credentials for %q: %w", name, err)
 	}
 
-	// API key profiles: the key itself is the token, no refresh needed.
+	// API key profiles have no OAuth access token and no usage endpoint.
+	// Never hand the key back as a "token": callers send it as a bearer token.
 	if parsedCreds.Type == schema.CredentialAPIKey {
-		return parsedCreds.APIKey, false, nil
+		return "", false, errNoUsageForAPIKey
 	}
 
 	// If the access token is still valid, use it directly — no refresh needed.
