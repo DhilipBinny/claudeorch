@@ -3,11 +3,13 @@
 package launch
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
+	"github.com/DhilipBinny/claudeorch/internal/schema"
 )
 
 // sharedSymlinks is the set of files/dirs from the default Claude config home
@@ -22,6 +24,14 @@ var sharedSymlinks = []string{
 }
 
 // Materialize creates (or updates) the isolate directory for the given profile.
+//
+// It is safe to call while another claude process is already running in the
+// same isolate (a second launch of the same profile, e.g. from another
+// folder). Credentials and .claude.json are only copied in from the profile
+// when the isolate has none, or when the profile's tokens are strictly
+// fresher. A running session rotates tokens in the isolate and keeps project
+// state in .claude.json; blindly overwriting either would log it out or
+// discard its state.
 //
 // Layout:
 //   - isolateDir/credentials.json  — 0600 copy from profileDir
@@ -40,15 +50,21 @@ func Materialize(profileDir, isolateDir, claudeConfigHome string, isolated bool)
 		return "", fmt.Errorf("launch.Materialize: %w", err)
 	}
 
-	// Copy credentials.
-	if err := copyCredentials(profileDir, isolateDir); err != nil {
+	// Copy credentials only when the profile is the fresher source.
+	refreshed, err := syncCredentials(profileDir, isolateDir)
+	if err != nil {
 		return "", err
 	}
 
-	// Copy claude.json.
-	if err := copyFileToDir(filepath.Join(profileDir, "claude.json"),
-		filepath.Join(isolateDir, ".claude.json"), 0o600); err != nil {
-		return "", fmt.Errorf("launch.Materialize: copy .claude.json: %w", err)
+	// .claude.json is live session state once claude is running. Seed it
+	// when absent, and re-seed it when we just replaced the credentials
+	// (the identity may have changed with them). Otherwise leave it alone.
+	claudeJSON := filepath.Join(isolateDir, ".claude.json")
+	if _, statErr := os.Stat(claudeJSON); refreshed || os.IsNotExist(statErr) {
+		if err := copyFileToDir(filepath.Join(profileDir, "claude.json"),
+			claudeJSON, 0o600); err != nil {
+			return "", fmt.Errorf("launch.Materialize: copy .claude.json: %w", err)
+		}
 	}
 
 	// Copy settings.local.json if it exists (not shared).
@@ -74,11 +90,54 @@ func Materialize(profileDir, isolateDir, claudeConfigHome string, isolated bool)
 	return isolateDir, nil
 }
 
-// copyCredentials copies credentials.json from profileDir to isolateDir.
-func copyCredentials(profileDir, isolateDir string) error {
+// syncCredentials copies credentials.json from profileDir into the isolate
+// as .credentials.json, but only when the isolate has none or the profile's
+// copy is fresher (see profileIsFresher). It reports whether it wrote.
+// A missing profile credentials file is not an error and writes nothing.
+func syncCredentials(profileDir, isolateDir string) (bool, error) {
 	src := filepath.Join(profileDir, "credentials.json")
 	dst := filepath.Join(isolateDir, ".credentials.json")
-	return copyFileToDir(src, dst, 0o600)
+
+	srcData, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("launch.Materialize: read profile credentials: %w", err)
+	}
+
+	if dstData, err := os.ReadFile(dst); err == nil && !profileIsFresher(srcData, dstData) {
+		return false, nil
+	}
+
+	if err := fsio.WriteFileAtomic(dst, srcData, 0o600); err != nil {
+		return false, fmt.Errorf("launch.Materialize: write credentials: %w", err)
+	}
+	return true, nil
+}
+
+// profileIsFresher reports whether the profile's credential blob should
+// replace the isolate's.
+//
+//   - Unusable isolate copy: replace it.
+//   - Unusable profile copy: keep the isolate's, never clobber good with bad.
+//   - Both OAuth: replace only if the profile's expiresAt is strictly later.
+//     Ties keep the isolate, which is what a running session owns.
+//   - Otherwise (API keys do not rotate): the profile is authoritative, so
+//     replace when the contents differ.
+func profileIsFresher(profileData, isolateData []byte) bool {
+	iso, isoErr := schema.ParseCredentials(isolateData)
+	if isoErr != nil {
+		return true
+	}
+	prof, profErr := schema.ParseCredentials(profileData)
+	if profErr != nil {
+		return false
+	}
+	if prof.Type == schema.CredentialOAuth && iso.Type == schema.CredentialOAuth {
+		return prof.ExpiresAt.After(iso.ExpiresAt)
+	}
+	return !bytes.Equal(profileData, isolateData)
 }
 
 // copyFileToDir copies src to dst with the given mode.

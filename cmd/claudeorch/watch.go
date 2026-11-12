@@ -200,7 +200,7 @@ func runWatchStatus(cmd *cobra.Command) error {
 		watcherRunning = true
 		fmt.Fprintf(out, "Watcher: running (pid %d)\n\n", pid)
 	} else {
-		fmt.Fprintln(out, "Watcher: not running\n")
+		fmt.Fprint(out, "Watcher: not running\n\n")
 	}
 
 	// Read from status file if available, else poll live.
