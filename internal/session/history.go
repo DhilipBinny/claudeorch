@@ -13,14 +13,14 @@ import (
 )
 
 type Conversation struct {
-	SessionID  string    `json:"session_id"`
-	CWD        string    `json:"cwd"`
-	Profile    string    `json:"profile"`
-	FirstPrompt string   `json:"first_prompt"`
-	Messages   int       `json:"messages"`
-	Size       int64     `json:"size"`
-	ModTime    time.Time `json:"mod_time"`
-	FilePath   string    `json:"file_path"`
+	SessionID   string    `json:"session_id"`
+	CWD         string    `json:"cwd"`
+	Profile     string    `json:"profile"`
+	FirstPrompt string    `json:"first_prompt"`
+	Messages    int       `json:"messages"`
+	Size        int64     `json:"size"`
+	ModTime     time.Time `json:"mod_time"`
+	FilePath    string    `json:"file_path"`
 }
 
 func ScanConversations(claudeDir string, isolateDir string) ([]Conversation, error) {

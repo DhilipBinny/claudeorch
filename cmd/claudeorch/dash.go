@@ -9,16 +9,16 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/DhilipBinny/claudeorch/internal/mux"
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
 	"github.com/DhilipBinny/claudeorch/internal/session"
 	"github.com/DhilipBinny/claudeorch/internal/usage"
 	"github.com/DhilipBinny/claudeorch/internal/watch"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
@@ -2266,7 +2266,7 @@ func (m dashModel) renderSend() string {
 	title := dOverlayTitle.Render("  ⚡ Send to " + target)
 	b.WriteString(title + "\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(brandMagenta).
-		Render("  " + strings.Repeat("─", boxWidth)) + "\n\n")
+		Render("  "+strings.Repeat("─", boxWidth)) + "\n\n")
 
 	b.WriteString("    " + m.input.View() + "\n\n")
 

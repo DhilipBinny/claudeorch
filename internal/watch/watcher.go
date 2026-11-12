@@ -47,8 +47,8 @@ type WindowState struct {
 
 // Snapshot captures the state of all windows at a point in time.
 type Snapshot struct {
-	Timestamp time.Time      `json:"timestamp"`
-	Windows   []WindowState  `json:"windows"`
+	Timestamp time.Time     `json:"timestamp"`
+	Windows   []WindowState `json:"windows"`
 }
 
 // DetectState examines tmux pane output to determine if Claude is idle.
