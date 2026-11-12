@@ -71,12 +71,19 @@ Refuses with exit code **2** when any Claude session is running, unless `--force
 
 ### `claudeorch launch <name> [-- claude-args...]`
 
-Materialize a per-profile isolate directory at `~/.claudeorch/isolate/<name>/` and `exec` `claude` with `CLAUDE_CONFIG_DIR` pointed at it. Use for parallel sessions across terminals.
+Materialize a per-profile isolate directory at `~/.claudeorch/isolate/<name>/` and `exec` `claude` with `CLAUDE_CONFIG_DIR` pointed at it. Use it to run different accounts side by side in separate terminals.
 
-**Flags:**
+A profile can be launched **any number of times, from any folder**, like plain `claude`. All launches of one profile share the same isolate directory and so the same credentials file. A later launch never overwrites a running session's tokens or `.claude.json`: credentials are copied in from the profile only when the isolate has none or the profile's are strictly fresher.
+
+The one refusal is a profile whose tokens are also live in `~/.claude/` (e.g. after `swap`), because that is two separate copies of one refresh token. Override with `claudeorch --force launch <name>`.
+
+**Flags** (must come **before** the profile name; everything after it goes to `claude`):
+- `--cwd <dir>` start `claude` in `<dir>` instead of the current directory.
 - `--isolated` skip the shared-content symlinks (no `CLAUDE.md`, `projects/`, etc. linked from `~/.claude/`). Full isolation.
 
-**Pass-through:** arguments after `--` go straight to `claude`:
+A claudeorch flag written after the profile name is rejected with a hint rather than silently passed to `claude`.
+
+**Pass-through:** arguments after `--` go straight to `claude` (the `--` itself is not forwarded):
 ```bash
 claudeorch launch work -- --dangerously-skip-permissions
 ```
