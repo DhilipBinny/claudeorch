@@ -172,13 +172,13 @@ func TestRenderTable_Alignment(t *testing.T) {
 
 func TestVisibleWidth_IgnoresANSI(t *testing.T) {
 	cases := map[string]int{
-		"":                                 0,
-		"abc":                              3,
-		"\x1b[1mabc\x1b[0m":                3,
-		"\x1b[31;1mred bold\x1b[0m":        8,
-		"plain\x1b[0m tail":                10,
-		"█░░":                              3,
-		"\x1b[32m██\x1b[0m░":               3,
+		"":                          0,
+		"abc":                       3,
+		"\x1b[1mabc\x1b[0m":         3,
+		"\x1b[31;1mred bold\x1b[0m": 8,
+		"plain\x1b[0m tail":         10,
+		"█░░":                       3,
+		"\x1b[32m██\x1b[0m░":        3,
 	}
 	for in, want := range cases {
 		if got := visibleWidth(in); got != want {
@@ -198,8 +198,8 @@ func TestTruncate_Unicode(t *testing.T) {
 
 func TestStripANSI(t *testing.T) {
 	cases := map[string]string{
-		"\x1b[31mred\x1b[0m":    "red",
-		"plain":                 "plain",
+		"\x1b[31mred\x1b[0m":     "red",
+		"plain":                  "plain",
 		"\x1b[1;32mgreen\x1b[0m": "green",
 	}
 	for in, want := range cases {
