@@ -71,12 +71,21 @@ Refuses with exit code **2** when any Claude session is running, unless `--force
 
 ### `claudeorch launch <name> [-- claude-args...]`
 
-Materialize a per-profile isolate directory at `~/.claudeorch/isolate/<name>/` and `exec` `claude` with `CLAUDE_CONFIG_DIR` pointed at it. Use for parallel sessions across terminals.
+Materialize a per-profile isolate directory at `~/.claudeorch/isolate/<name>/` and `exec` `claude` with `CLAUDE_CONFIG_DIR` pointed at it. Use it to run different accounts side by side in separate terminals.
 
-**Flags:**
+A profile can be launched **any number of times, from any folder**, like plain `claude`. All launches of one profile share the same isolate directory and so the same credentials file. Credentials are copied in from the profile only when the isolate has none or the profile's are strictly fresher, and `.claude.json` is copied only when it is absent or the credentials were just replaced. A launch also leaves an isolate alone when a running session already owns it but has no credentials file (macOS Claude Code deletes it once the login is in the Keychain).
+
+Two cases are refused, because they would hold one refresh token in two places (override with `claudeorch --force launch <name>`):
+- the profile's tokens are live in `~/.claude/` (e.g. after `swap`);
+- the profile is running in an isolate session **and** is also live in `~/.claude/`.
+
+**Flags** (must come **before** the profile name; everything after it goes to `claude`):
+- `--cwd <dir>` start `claude` in `<dir>` instead of the current directory.
 - `--isolated` skip the shared-content symlinks (no `CLAUDE.md`, `projects/`, etc. linked from `~/.claude/`). Full isolation.
 
-**Pass-through:** arguments after `--` go straight to `claude`:
+`--force` and `--isolated` written after the profile name are rejected with a hint rather than silently passed to `claude`. Other flags after the name, including ones claudeorch also defines such as `--debug` and `--json`, go to `claude`.
+
+**Pass-through:** arguments after the profile name go straight to `claude`. A `--` directly after the name is consumed (it only marks where claudeorch's flags end); a later `--` is passed through:
 ```bash
 claudeorch launch work -- --dangerously-skip-permissions
 ```
