@@ -84,17 +84,57 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read %s: %w", claudeJSONPath, err)
 	}
 
-	credsData, err := creds.ReadLive(credsPath)
-	if err != nil {
-		return err
-	}
-
 	identity, err := schema.ExtractIdentity(claudeJSONData)
 	if err != nil {
 		return fmt.Errorf("parse .claude.json: %w", err)
 	}
-	if _, err := schema.ParseCredentials(credsData); err != nil {
-		return fmt.Errorf("parse .credentials.json: %w", err)
+
+	// Detect credential type: try OAuth credentials first, then API key.
+	var credsData []byte
+	var credType schema.CredentialType
+
+	var liveParseErr error
+	liveData, liveErr := creds.ReadLive(credsPath)
+	if liveErr == nil {
+		var parsed *schema.Credentials
+		parsed, liveParseErr = schema.ParseCredentials(liveData)
+		if liveParseErr == nil {
+			credsData = liveData
+			credType = parsed.Type
+		}
+	}
+
+	if credsData == nil {
+		if creds.APIKeyHelperInUse() {
+			return fmt.Errorf("Claude Code is configured with an apiKeyHelper in settings.json, which takes precedence over the stored key.\n" +
+				"claudeorch cannot run the helper, so it cannot tell which key is live and will not save a possibly stale one.\n" +
+				"Export the key as ANTHROPIC_API_KEY (and approve it in Claude Code), or remove apiKeyHelper, then retry")
+		}
+		// No usable OAuth credential — try an API key instead (keyring on
+		// macOS/Linux, flat file elsewhere).
+		apiKey, keyErr := creds.ReadLiveAPIKey()
+		if keyErr != nil {
+			if liveErr != nil {
+				return fmt.Errorf("no credentials found:\n  OAuth: %v\n  API key: %v", liveErr, keyErr)
+			}
+			// The credential source was readable but held no Claude
+			// identity. Report the real parse failure: saying "present but
+			// invalid" hides whether the blob was malformed or simply
+			// belonged to something else (e.g. a file containing only
+			// mcpOAuth entries for MCP servers).
+			return fmt.Errorf("no valid credentials found:\n  OAuth: %v\n  API key: %v", liveParseErr, keyErr)
+		}
+		blob, blobErr := schema.MakeAPIKeyCredentialBlob(apiKey)
+		if blobErr != nil {
+			return fmt.Errorf("marshal API key: %w", blobErr)
+		}
+		credsData = blob
+		credType = schema.CredentialAPIKey
+	}
+
+	source := profile.SourceOAuth
+	if credType == schema.CredentialAPIKey {
+		source = profile.SourceAPIKey
 	}
 
 	// Acquire global lock.
@@ -161,6 +201,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 		now := time.Now().UTC()
 		store.Profiles[existingName].LastUsedAt = now
+		// The credential type may have changed since the profile was saved
+		// (OAuth to API key, or back); keep Source in step with what was just
+		// written, or swap/launch/doctor would treat it as the old type.
+		store.Profiles[existingName].Source = source
 		// 'add' just wrote fresh credentials from a successful claude /login.
 		// If a prior failed refresh had set NeedsReauth, this is exactly the
 		// recovery the flag was telling the user to perform — clear it.
@@ -223,7 +267,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		OrganizationUUID: identity.OrganizationUUID,
 		OrganizationName: identity.OrganizationName,
 		CreatedAt:        time.Now().UTC(),
-		Source:           profile.SourceOAuth,
+		Source:           source,
 	}
 	// The credentials we just copied came from live ~/.claude/, so this new
 	// profile IS the live account. Mark it active so 'status' and 'list'

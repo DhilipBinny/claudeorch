@@ -93,7 +93,7 @@ Run `claudeorch <command> --help` for flags, or see the full [commands reference
 
 **Does it support Windows?** Not yet. Linux and macOS today; Windows is planned. Use WSL2 in the meantime.
 
-**Does it work with Claude API keys?** No — this is for Claude Code's OAuth flow. Plain API keys use environment variables.
+**Does it work with Claude API keys?** Yes. A Claude Code login made with an API key (or an approved `ANTHROPIC_API_KEY`) is saved by `claudeorch add` as an API-key profile and can be used with `launch`, and with `swap` on Linux. API-key profiles show no usage bars, and `swap` to one is not supported on macOS yet (use `launch`).
 
 ---
 

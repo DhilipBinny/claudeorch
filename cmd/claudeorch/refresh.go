@@ -82,6 +82,12 @@ func runRefresh(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("profile %q not found", name)
 	}
 
+	// API key profiles have no OAuth tokens to refresh.
+	if p.Source == profile.SourceAPIKey {
+		fmt.Fprintf(cmd.OutOrStdout(), "Profile %q uses an API key — no token refresh needed.\n", name)
+		return nil
+	}
+
 	// Refuse to refresh active profile unless --force.
 	if store.IsActive(name) && !flagForce {
 		return fmt.Errorf("profile %q is active; use --force to refresh it (may interrupt running sessions)", name)

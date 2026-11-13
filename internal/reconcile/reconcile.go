@@ -183,6 +183,18 @@ func Reconcile(store *profile.Store, p Paths) (Report, error) {
 func reconcileOne(prof *profile.Profile, store *profile.Store, p Paths,
 	liveIdentity *schema.Identity, rep *Report) error {
 
+	// API key profiles don't have rotating tokens — skip freshness sync
+	// but still do orphan-isolate cleanup.
+	if prof.Source == profile.SourceAPIKey {
+		if prof.Location == profile.LocationIsolated {
+			if !isolateHasLiveOwner(filepath.Join(p.IsolatesRoot, prof.Name)) {
+				prof.Location = profile.LocationDormant
+				rep.OrphansCleared = append(rep.OrphansCleared, prof.Name)
+			}
+		}
+		return nil
+	}
+
 	profileCredsPath := filepath.Join(p.ProfilesRoot, prof.Name, "credentials.json")
 	isolateCredsPath := filepath.Join(p.IsolatesRoot, prof.Name, ".credentials.json")
 	liveCredsPath := filepath.Join(p.ClaudeConfigHome, ".credentials.json")

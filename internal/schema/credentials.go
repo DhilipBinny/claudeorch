@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -22,12 +23,32 @@ const maxFileSize = 10 << 20 // 10 MiB
 // low-level error.
 var ErrSchemaIncompatible = errors.New("schema: file structure incompatible with this version of claudeorch")
 
-// Credentials holds the subset of .credentials.json that claudeorch needs.
+// CredentialType distinguishes the authentication mechanism a profile uses.
+type CredentialType int
+
+const (
+	// CredentialOAuth is the original OAuth 2.0 flow (personal subscription
+	// via `claude /login`). Credentials contain claudeAiOauth with
+	// accessToken, refreshToken, and expiresAt.
+	CredentialOAuth CredentialType = iota
+
+	// CredentialAPIKey is an API-key-based flow (e.g., API plan or
+	// organisation-provisioned keys). The credential is a single
+	// long-lived key string (sk-ant-...) with no refresh rotation.
+	CredentialAPIKey
+)
+
+// Credentials holds the subset of credential data that claudeorch needs.
 //
 // The raw JSON blob (the full file) is preserved in Raw so callers can pass
 // it through to the OAuth refresh path without re-serializing and accidentally
 // dropping unknown keys.
 type Credentials struct {
+	// Type indicates whether this is an OAuth or API key credential.
+	Type CredentialType
+
+	// --- OAuth fields (populated when Type == CredentialOAuth) ---
+
 	AccessToken  string    // claudeAiOauth.accessToken
 	RefreshToken string    // claudeAiOauth.refreshToken
 	ExpiresAt    time.Time // claudeAiOauth.expiresAt
@@ -37,21 +58,36 @@ type Credentials struct {
 	// the refresh path so it can write back the same type Claude Code uses.
 	ExpiresAtWasNumeric bool
 
+	// --- API key fields (populated when Type == CredentialAPIKey) ---
+
+	// APIKey is the raw API key string (sk-ant-...).
+	APIKey string
+
 	// Raw is the full original JSON blob, suitable for opaque passthrough to
-	// the refresh client which must preserve unknown fields.
+	// the refresh client which must preserve unknown fields. For API key
+	// credentials, this is a JSON envelope: {"apiKey": "sk-ant-..."}.
 	Raw []byte
 }
 
-// ParseCredentials extracts the OAuth fields from a .credentials.json blob.
+// ParseCredentials extracts credential fields from a stored blob.
 //
-// The blob must:
-//   - be ≤ maxFileSize
-//   - be valid JSON
-//   - contain "claudeAiOauth" with at minimum "accessToken", "refreshToken",
-//     and "expiresAt"
+// Supports two formats:
 //
-// Missing or empty "accessToken" / "refreshToken" are treated as
-// ErrSchemaIncompatible so callers can give a clear "not logged in" message.
+//  1. OAuth: JSON with "claudeAiOauth" containing "accessToken",
+//     "refreshToken", and "expiresAt". Returns Type == CredentialOAuth.
+//
+//  2. API key: JSON with "apiKey" containing the raw key string
+//     (e.g., "sk-ant-..."). Returns Type == CredentialAPIKey.
+//
+// If a blob contains BOTH formats, OAuth wins. Claude Code never reads an
+// "apiKey" from .credentials.json, and it keeps unknown top-level keys when
+// it rewrites the file, so after an API-key swap followed by 'claude /login'
+// the file holds a leftover "apiKey" next to the fresh "claudeAiOauth". The
+// leftover must not turn that login into an API-key profile. The "apiKey"
+// form is claudeorch's own profile storage format and is only used when no
+// usable OAuth login is present.
+//
+// The blob must be ≤ maxFileSize and valid JSON.
 func ParseCredentials(data []byte) (*Credentials, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("%w: empty credentials file", ErrSchemaIncompatible)
@@ -60,24 +96,45 @@ func ParseCredentials(data []byte) (*Credentials, error) {
 		return nil, fmt.Errorf("schema: credentials file is %d bytes, exceeds max %d", len(data), maxFileSize)
 	}
 
-	// Minimal envelope — we don't unmarshal into a full struct to avoid
-	// dropping unknown fields at the top level.
-	//
-	// expiresAt is declared as json.RawMessage because Claude Code has written
-	// two shapes over time: numeric milliseconds-since-epoch (current) and
-	// RFC3339 string (older drafts / some forks). We accept both.
+	// Try both formats from the same unmarshal.
 	var envelope struct {
 		ClaudeAiOauth *struct {
 			AccessToken  string          `json:"accessToken"`
 			RefreshToken string          `json:"refreshToken"`
 			ExpiresAt    json.RawMessage `json:"expiresAt"`
 		} `json:"claudeAiOauth"`
+		APIKey string `json:"apiKey"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return nil, fmt.Errorf("schema: credentials JSON parse error: %w", err)
 	}
+
+	// OAuth login present and usable: it wins over any leftover "apiKey".
+	if o := envelope.ClaudeAiOauth; o != nil && o.AccessToken != "" && o.RefreshToken != "" {
+		expiresAt, numeric := parseExpiresAt(o.ExpiresAt)
+		return &Credentials{
+			Type:                CredentialOAuth,
+			AccessToken:         o.AccessToken,
+			RefreshToken:        o.RefreshToken,
+			ExpiresAt:           expiresAt,
+			ExpiresAtWasNumeric: numeric,
+			Raw:                 data,
+		}, nil
+	}
+
+	// API key format (claudeorch profile storage). A key that is only
+	// whitespace is treated as absent.
+	if apiKey := strings.TrimSpace(envelope.APIKey); apiKey != "" {
+		return &Credentials{
+			Type:   CredentialAPIKey,
+			APIKey: apiKey,
+			Raw:    data,
+		}, nil
+	}
+
+	// OAuth format.
 	if envelope.ClaudeAiOauth == nil {
-		return nil, fmt.Errorf("%w: missing \"claudeAiOauth\" key", ErrSchemaIncompatible)
+		return nil, fmt.Errorf("%w: missing \"claudeAiOauth\" and \"apiKey\" keys", ErrSchemaIncompatible)
 	}
 	oauth := envelope.ClaudeAiOauth
 	if oauth.AccessToken == "" {
@@ -90,12 +147,24 @@ func ParseCredentials(data []byte) (*Credentials, error) {
 	expiresAt, numeric := parseExpiresAt(oauth.ExpiresAt)
 
 	return &Credentials{
+		Type:                CredentialOAuth,
 		AccessToken:         oauth.AccessToken,
 		RefreshToken:        oauth.RefreshToken,
 		ExpiresAt:           expiresAt,
 		ExpiresAtWasNumeric: numeric,
 		Raw:                 data,
 	}, nil
+}
+
+// MakeAPIKeyCredentialBlob creates the JSON blob for storing an API key
+// in claudeorch's profile credentials.json format.
+func MakeAPIKeyCredentialBlob(apiKey string) ([]byte, error) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, errors.New("schema: API key is empty")
+	}
+	blob := map[string]string{"apiKey": apiKey}
+	return json.Marshal(blob)
 }
 
 // parseExpiresAt accepts either a JSON number (milliseconds since epoch) or

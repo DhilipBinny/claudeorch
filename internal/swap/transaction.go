@@ -16,13 +16,17 @@
 package swap
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DhilipBinny/claudeorch/internal/creds"
+	"github.com/DhilipBinny/claudeorch/internal/fsio"
+	"github.com/DhilipBinny/claudeorch/internal/schema"
 )
 
 // Run performs a full swap of the live Claude credentials to the given profile.
@@ -35,10 +39,152 @@ import (
 // claudeConfigHome is the resolved ~/.claude dir
 // claudeJSONPath is the resolved ~/.claude.json (or inside configHome if CLAUDE_CONFIG_DIR set)
 func Run(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath string) error {
+	apiKey, err := profileAPIKey(profileDir)
+	if err != nil {
+		return err
+	}
 	if creds.IsKeychainBased() {
+		if apiKey != "" {
+			return ErrAPIKeySwapUnsupported
+		}
 		return runKeychainSwap(profileDir, claudeConfigHome, claudeJSONPath)
 	}
+	if apiKey != "" {
+		return runFileAPIKeySwap(profileDir, claudeConfigHome, claudeJSONPath, apiKey)
+	}
 	return runFileSwap(profileDir, claudeorchHome, claudeConfigHome, claudeJSONPath)
+}
+
+// ErrAPIKeySwapUnsupported is returned when asked to swap the live account to
+// an API-key profile while credentials live in the macOS Keychain. Making
+// Claude Code use an API key there means deleting its OAuth Keychain item,
+// which also holds MCP tokens, and has not been verified against a real
+// Mac. 'launch' still works for such profiles.
+var ErrAPIKeySwapUnsupported = errors.New(
+	"swapping to an API-key profile is not supported on macOS yet " +
+		"(it would have to delete Claude Code's OAuth Keychain item); " +
+		"use 'claudeorch launch <name>' to run it instead")
+
+// profileAPIKey returns the API key stored in the profile, or "" when the
+// profile holds an OAuth login.
+func profileAPIKey(profileDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(profileDir, "credentials.json"))
+	if err != nil {
+		return "", fmt.Errorf("swap: read profile credentials: %w", err)
+	}
+	parsed, err := schema.ParseCredentials(data)
+	if err != nil {
+		return "", fmt.Errorf("swap: parse profile credentials: %w", err)
+	}
+	if parsed.Type == schema.CredentialAPIKey {
+		return parsed.APIKey, nil
+	}
+	return "", nil
+}
+
+// runFileAPIKeySwap makes the live account an API-key profile on Linux.
+//
+// Claude Code reads an API key only from ANTHROPIC_API_KEY, apiKeyHelper, or
+// primaryApiKey in .claude.json; it ignores an "apiKey" in
+// .credentials.json. So the key goes into .claude.json (taken from the
+// profile, with primaryApiKey set), and the OAuth login is removed from
+// .credentials.json so Claude Code does not prefer it. Every other top-level
+// key in .credentials.json, notably mcpOAuth, is preserved.
+func runFileAPIKeySwap(profileDir, claudeConfigHome, claudeJSONPath, apiKey string) error {
+	slog.Debug("swap: starting (file mode, API key)", "profile_dir", profileDir)
+
+	srcClaude, err := os.ReadFile(filepath.Join(profileDir, "claude.json"))
+	if err != nil {
+		return fmt.Errorf("swap: read profile claude.json: %w", err)
+	}
+	newClaude, err := setTopLevelString(srcClaude, "primaryApiKey", apiKey)
+	if err != nil {
+		return fmt.Errorf("swap: prepare .claude.json: %w", err)
+	}
+
+	liveCreds := filepath.Join(claudeConfigHome, ".credentials.json")
+	var newCreds []byte // nil means "no credentials file needed"
+	if liveData, readErr := os.ReadFile(liveCreds); readErr == nil {
+		newCreds, err = dropTopLevelKey(liveData, "claudeAiOauth")
+		if err != nil {
+			return fmt.Errorf("swap: live %s is not valid JSON, refusing to rewrite it: %w", liveCreds, err)
+		}
+	} else if !os.IsNotExist(readErr) {
+		return fmt.Errorf("swap: read live credentials: %w", readErr)
+	}
+
+	backupCreds := liveCreds + ".pre-swap"
+	backupClaude := claudeJSONPath + ".pre-swap"
+	if _, err := os.Stat(liveCreds); err == nil {
+		if err := os.Rename(liveCreds, backupCreds); err != nil {
+			return fmt.Errorf("swap: backup credentials: %w", err)
+		}
+	}
+	if _, err := os.Stat(claudeJSONPath); err == nil {
+		if err := os.Rename(claudeJSONPath, backupClaude); err != nil {
+			if _, statErr := os.Stat(backupCreds); statErr == nil {
+				_ = os.Rename(backupCreds, liveCreds)
+			}
+			return fmt.Errorf("swap: backup .claude.json: %w", err)
+		}
+	}
+
+	fail := func(what string, cause error) error {
+		// Undo exactly what ran: drop anything we wrote, then restore backups.
+		_ = os.Remove(liveCreds)
+		_ = os.Remove(claudeJSONPath)
+		if rbErr := rollback(backupCreds, liveCreds, backupClaude, claudeJSONPath); rbErr != nil {
+			return fmt.Errorf("swap: %s: %v; rollback also failed: %w", what, cause, rbErr)
+		}
+		return fmt.Errorf("swap: %s: %w", what, cause)
+	}
+
+	if newCreds != nil {
+		if err := fsio.WriteFileAtomic(liveCreds, newCreds, 0o600); err != nil {
+			return fail("write credentials", err)
+		}
+	}
+	if err := fsio.WriteFileAtomic(claudeJSONPath, newClaude, 0o600); err != nil {
+		return fail("write .claude.json", err)
+	}
+
+	_ = os.Remove(backupCreds)
+	_ = os.Remove(backupClaude)
+	slog.Debug("swap: complete (file mode, API key)")
+	return nil
+}
+
+// setTopLevelString returns data (a JSON object) with key set to value and
+// every other top-level key kept as it was.
+func setTopLevelString(data []byte, key, value string) ([]byte, error) {
+	m := map[string]json.RawMessage{}
+	if len(strings.TrimSpace(string(data))) > 0 {
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, err
+		}
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	m[key] = raw
+	return json.Marshal(m)
+}
+
+// dropTopLevelKey returns data (a JSON object) without key, keeping every
+// other top-level key. It returns nil when nothing is left.
+func dropTopLevelKey(data []byte, key string) ([]byte, error) {
+	m := map[string]json.RawMessage{}
+	if len(strings.TrimSpace(string(data))) > 0 {
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, err
+		}
+	}
+	delete(m, key)
+	if len(m) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(m)
 }
 
 // runKeychainSwap handles the macOS path where credentials live in the
