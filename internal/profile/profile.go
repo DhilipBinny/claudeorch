@@ -26,13 +26,14 @@ import (
 const StoreVersion = 2
 
 // Source identifies where a profile's credentials came from.
-// v1 supports only OAuth (subscription login); API-key support may arrive in
-// a later minor version.
 type Source string
 
 const (
 	// SourceOAuth indicates credentials captured from `claude /login`.
 	SourceOAuth Source = "oauth"
+	// SourceAPIKey indicates an API-key-based credential (organisation-
+	// provisioned or user-generated key).
+	SourceAPIKey Source = "apikey"
 )
 
 // ErrUnknownSource is returned when loading a profile with an unrecognized
@@ -42,7 +43,7 @@ var ErrUnknownSource = errors.New("unknown profile source")
 // Validate returns nil if s is a known Source value.
 func (s Source) Validate() error {
 	switch s {
-	case SourceOAuth:
+	case SourceOAuth, SourceAPIKey:
 		return nil
 	default:
 		return fmt.Errorf("%w: %q", ErrUnknownSource, string(s))

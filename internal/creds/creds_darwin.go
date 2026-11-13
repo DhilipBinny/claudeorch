@@ -21,6 +21,11 @@ import (
 // or "claude" — all of which we tested and got empty results for.
 const keychainService = "Claude Code-credentials"
 
+// keychainAPIKeyService is the Keychain service name where Claude Code
+// stores an API key (sk-ant-...) for API-key-based authentication.
+// The value is a raw string, not JSON.
+const keychainAPIKeyService = "Claude Code"
+
 // keychainDisabled reports whether the Keychain must not be touched,
 // forcing flat-file mode on macOS. True in two cases:
 //
@@ -164,4 +169,41 @@ func writeKeychain(data []byte) error {
 		return fmt.Errorf("keychain write: %s", errMsg)
 	}
 	return nil
+}
+
+// ReadLiveAPIKey reads the API key from the macOS Keychain.
+// Returns the raw key string (e.g., "sk-ant-...") or an error.
+func ReadLiveAPIKey() (string, error) {
+	if keychainDisabled() {
+		// Still consult Claude Code's own state: an API key may come from
+		// ANTHROPIC_API_KEY or .claude.json's primaryApiKey, neither of
+		// which involves the Keychain.
+		if key, _, ok := liveAPIKeyFromClaudeState(); ok {
+			return key, nil
+		}
+		return "", fmt.Errorf("keychain disabled (test or CLAUDEORCH_NO_KEYCHAIN)")
+	}
+	cmd := exec.Command("security", "find-generic-password",
+		"-s", keychainAPIKeyService,
+		"-a", currentUsername(),
+		"-w",
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return "", fmt.Errorf("keychain read API key: %s", errMsg)
+	}
+	key := strings.TrimSpace(stdout.String())
+	if key == "" {
+		if fallback, _, ok := liveAPIKeyFromClaudeState(); ok {
+			return fallback, nil
+		}
+		return "", fmt.Errorf("keychain API key entry is empty")
+	}
+	return key, nil
 }

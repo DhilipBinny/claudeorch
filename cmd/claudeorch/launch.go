@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/DhilipBinny/claudeorch/internal/fsio"
 	"github.com/DhilipBinny/claudeorch/internal/launch"
 	"github.com/DhilipBinny/claudeorch/internal/paths"
 	"github.com/DhilipBinny/claudeorch/internal/profile"
+	"github.com/DhilipBinny/claudeorch/internal/schema"
 	"github.com/spf13/cobra"
 )
 
@@ -129,13 +131,17 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 		return fmt.Errorf("reconcile: %w", err)
 	}
 
+	// API key profiles don't suffer from OAuth token rotation conflicts,
+	// so the double-book refusals are skipped for them.
+	isAPIKey := p.Source == profile.SourceAPIKey
+
 	// Refuse double-book: profile is already in another location.
 	// Error messages are deliberately verbose — these are paths users hit
 	// while learning the live-vs-isolate distinction, and terse messages
 	// lead to "what does this mean" confusion.
 	switch p.Location {
 	case profile.LocationLive:
-		if !flagForce {
+		if !isAPIKey && !flagForce {
 			return fmt.Errorf(
 				"profile %q is your default account right now — its tokens live in ~/.claude/.\n"+
 					"\n"+
@@ -156,12 +162,14 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 					"      claudeorch --force launch %s",
 				name, name, name, name, name, name)
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"Warning: launching %q while it's also live in ~/.claude/ — one side will break.\n", name)
+		if !isAPIKey {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"Warning: launching %q while it's also live in ~/.claude/ — one side will break.\n", name)
+		}
 	case profile.LocationIsolated:
 		// Reconcile's orphan cleanup already downgraded any dead isolate.
 		// If still marked isolated, it's owned by a running claude process.
-		if !flagForce {
+		if !isAPIKey && !flagForce {
 			return fmt.Errorf(
 				"profile %q is already running in an isolate session (another terminal).\n"+
 					"\n"+
@@ -179,8 +187,10 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 					"      claudeorch --force launch %s",
 				name, name, name)
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"Warning: launching %q when already isolated — one side will break.\n", name)
+		if !isAPIKey {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"Warning: launching %q when already isolated — one side will break.\n", name)
+		}
 	}
 
 	// Mark isolated pre-emptively so concurrent launches see the state
@@ -202,9 +212,33 @@ func runLaunch(cmd *cobra.Command, isolated bool, args []string) error {
 		return fmt.Errorf("materialize isolate: %w", err)
 	}
 
+	// For API key profiles, read the key to pass via environment variable.
+	var apiKey string
+	if isAPIKey {
+		credsPath := filepath.Join(profileDir, "credentials.json")
+		credsData, readErr := os.ReadFile(credsPath)
+		if readErr == nil {
+			parsed, parseErr := schema.ParseCredentials(credsData)
+			if parseErr == nil && parsed.Type == schema.CredentialAPIKey {
+				apiKey = parsed.APIKey
+			}
+		}
+	}
+
+	// If the isolate's own saved login already holds exactly this key, Claude
+	// Code authenticates with it by itself. Also passing it through
+	// ANTHROPIC_API_KEY only makes Claude Code print "ANTHROPIC_API_KEY
+	// overriding saved Console key". Drop the redundant variable, and clear any
+	// different key inherited from the shell so it cannot override the profile.
+	// When the saved key is absent or differs, the explicit override stays.
+	if apiKey != "" && launch.SavedAPIKeyMatches(isolateDir, apiKey) {
+		_ = os.Unsetenv("ANTHROPIC_API_KEY")
+		apiKey = ""
+	}
+
 	fmt.Fprintf(cmd.ErrOrStderr(), "Launching claude with profile %q (CLAUDE_CONFIG_DIR=%s)\n",
 		name, isolateDir)
 
 	// Exec replaces this process — defers above have already run.
-	return launch.Exec("", isolateDir, claudeArgs)
+	return launch.Exec("", isolateDir, claudeArgs, apiKey)
 }

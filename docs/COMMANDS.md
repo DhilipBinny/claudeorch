@@ -30,6 +30,10 @@ Snapshot the currently-active Claude Code credentials as a named profile. Reads 
 - Same `(email, org_uuid)` already saved under the SAME name → refresh-in-place (updates creds).
 - Same identity saved under a DIFFERENT name → refuses with a clear error (suggests `claude /logout` + `/login` as a different account first).
 
+**API keys:** with no usable OAuth login in `.credentials.json`, `add` saves an API key instead, found in Claude Code's own order: an approved `ANTHROPIC_API_KEY`, then `apiKeyHelper`, then `primaryApiKey` in `.claude.json`. A key you rejected in Claude Code is never saved. If an `apiKeyHelper` is configured, `add` refuses (claudeorch does not run it, so it cannot know the live key). A usable OAuth login always wins over a leftover `apiKey` in the file. Re-running `add` for a saved identity updates the profile's type if it changed.
+
+**API-key profiles** have no usage bars, are exempt from the token-expiry, drift and double-holder checks, and `refresh` has nothing to do for them. `launch` passes the key to `claude` via `ANTHROPIC_API_KEY` unless the isolate's saved login already holds the same key. `swap` to an API-key profile (Linux) sets `primaryApiKey` in `.claude.json`, removes only the OAuth login from `.credentials.json` and keeps its other keys such as `mcpOAuth`. It is not supported on macOS yet; use `launch` there.
+
 ### `claudeorch list`
 
 Table of every saved profile with live 5H + 7D usage bars fetched from `api.anthropic.com/api/oauth/usage`. One HTTP request per profile.

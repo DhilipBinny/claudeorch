@@ -34,3 +34,15 @@ func WriteLive(credsPath string, data []byte) error {
 func IsKeychainBased() bool {
 	return false
 }
+
+// ReadLiveAPIKey returns the API key Claude Code is authenticating with.
+//
+// On Linux Claude Code keeps no API key in .credentials.json (it reads only
+// ANTHROPIC_API_KEY, apiKeyHelper, or primaryApiKey in .claude.json), so the
+// key is resolved from that state in Claude Code's own order.
+func ReadLiveAPIKey() (string, error) {
+	if key, _, ok := liveAPIKeyFromClaudeState(); ok {
+		return key, nil
+	}
+	return "", fmt.Errorf("no API key found (no approved ANTHROPIC_API_KEY, and no primaryApiKey in .claude.json)")
+}
