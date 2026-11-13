@@ -402,16 +402,31 @@ func writeCredsRaw(data []byte, dst string) error {
 	return fsio.WriteFileAtomic(dst, data, 0o600)
 }
 
-// isolateHasLiveOwner reports whether any running process has its
-// CLAUDE_CONFIG_DIR set to isolateDir. Checks /proc/*/environ on Linux;
-// returns true on macOS (where we can't read other processes' env) to
-// avoid false-positive orphan reports.
+// isolateHasLiveOwner reports whether any running process owns isolateDir.
+// Two signals are combined, and either one is enough to say "owned":
+//  1. A live PID in the isolate's own sessions/ (or ide/) files. This works
+//     on every platform, but a stale file alone must not hide a live owner.
+//  2. On Linux, a process whose CLAUDE_CONFIG_DIR is isolateDir
+//     (/proc/*/environ).
+//
+// Only when neither signal can be read do we assume "owned", so we never
+// wrongly report a running session as orphaned.
 func isolateHasLiveOwner(isolateDir string) bool {
-	// List all process PIDs and inspect their CLAUDE_CONFIG_DIR.
+	live, sessErr := session.HasLiveSession(isolateDir)
+	if sessErr == nil && live {
+		return true
+	}
+
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		// Not Linux (or /proc unreadable) — be conservative: assume owned,
-		// so we don't wrongly mark isolates as orphaned.
+		// No /proc (macOS). If the session files were readable and held no
+		// live PID, the isolate really is orphaned. Otherwise we have no
+		// signal at all, so be conservative.
+		if sessErr == nil {
+			if _, statErr := os.Stat(filepath.Join(isolateDir, "sessions")); statErr == nil {
+				return false
+			}
+		}
 		return true
 	}
 	target := filepath.Clean(isolateDir)

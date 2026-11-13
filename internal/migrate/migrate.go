@@ -34,17 +34,17 @@ type SessionInfo struct {
 
 // IndexEntry is one entry inside sessions-index.json.
 type IndexEntry struct {
-	SessionID   string `json:"sessionId"`
-	FullPath    string `json:"fullPath"`
-	FileMtime   int64  `json:"fileMtime"`
-	FirstPrompt string `json:"firstPrompt"`
-	Summary     string `json:"summary"`
-	MessageCount int   `json:"messageCount"`
-	Created     string `json:"created"`
-	Modified    string `json:"modified"`
-	GitBranch   string `json:"gitBranch"`
-	ProjectPath string `json:"projectPath"`
-	IsSidechain bool   `json:"isSidechain"`
+	SessionID    string `json:"sessionId"`
+	FullPath     string `json:"fullPath"`
+	FileMtime    int64  `json:"fileMtime"`
+	FirstPrompt  string `json:"firstPrompt"`
+	Summary      string `json:"summary"`
+	MessageCount int    `json:"messageCount"`
+	Created      string `json:"created"`
+	Modified     string `json:"modified"`
+	GitBranch    string `json:"gitBranch"`
+	ProjectPath  string `json:"projectPath"`
+	IsSidechain  bool   `json:"isSidechain"`
 }
 
 // SessionsIndex is the top-level structure of sessions-index.json.
